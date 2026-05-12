@@ -16,6 +16,9 @@ public class Incidente {
     private EstadoIncidente estado;
     private Prioridad prioridad;
 
+    public Incidente() {
+    }
+
     public Incidente(int id, String titulo, String descripcion, LocalDateTime fechaCreacion, LocalDateTime fechaActualizacion, int usuarioId, Integer tecnicoId, EstadoIncidente estado, Prioridad prioridad) {
         this.id = id;
         this.titulo = titulo;

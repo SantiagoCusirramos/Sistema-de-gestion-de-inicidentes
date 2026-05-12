@@ -9,6 +9,9 @@ public class Comentario {
     private String mensaje;
     private LocalDateTime fecha;
 
+    public Comentario() {
+    }
+
     public Comentario(int id, int incidenteId, int usuarioId, String mensaje, LocalDateTime fecha) {
         this.id = id;
         this.incidenteId = incidenteId;

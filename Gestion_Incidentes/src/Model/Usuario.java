@@ -12,6 +12,9 @@ public class Usuario {
     private RolUsuario rol;
     private LocalDateTime fechaRegistro;
 
+    public Usuario() {
+    }
+
     public Usuario(int id, String nombre, String email, String password, RolUsuario rol, LocalDateTime fechaRegistro) {
         this.id = id;
         this.nombre = nombre;
