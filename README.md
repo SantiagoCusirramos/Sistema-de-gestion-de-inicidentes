@@ -1,34 +1,39 @@
-models/
-├── incident/
-│   ├── Incident.java                 # Entidad central (ID, título, descripción, fechas)
-│   ├── IncidentId.java               # Value object (evita primitives obsesion)
-│   └── IncidentStatus.java           # Enum con estados básicos (opcional si usas State machine aparte)
+src/
 │
-├── core/
-│   ├── Priority.java                 # Enum con niveles y sus SLA base
-│   ├── Category.java                 # Jerarquía de categorías (padre-hijo)
-│   └── Severity.java                 # Impacto + Urgencia = Prioridad (método Matrix)
+├── model/
+│   ├── Incidente.java
+│   ├── Usuario.java
+│   ├── Comentario.java
+│   └── HistorialEstado.java
 │
-├── state/
-│   ├── IncidentState.java            # Interfaz o enum de estados
-│   ├── StateTransition.java          # Transiciones permitidas (de -> para)
-│   └── StateMachine.java             # Lógica de cambio de estado
+├── dao/
+│   ├── IncidenteDAO.java
+│   ├── UsuarioDAO.java
+│   └── ComentarioDAO.java
 │
-├── actors/
-│   ├── Reporter.java                 # Quien abre el incidente (cliente, usuario final)
-│   ├── Technician.java               # Quien lo resuelve (con habilidades, grupo asignado)
-│   └── Assignee.java                 # Interfaz común si es necesario
+├── service/
+│   ├── IncidenteService.java
+│   ├── UsuarioService.java
+│   └── ReporteService.java
 │
-├── timeline/
-│   ├── TimelineEvent.java            # Cada cambio: estado, prioridad, asignación, comentario
-│   ├── EventType.java                # Enum: STATE_CHANGE, ASSIGNMENT, COMMENT, PRIORITY_CHANGE
-│   └── IncidentHistory.java          # Lista de eventos (aggregate root)
+├── controller/
+│   ├── IncidenteController.java
+│   └── AuthController.java
 │
-├── sla/
-│   ├── SlaPolicy.java                # Tiempo de respuesta/resolución por prioridad
-│   ├── SlaViolation.java             # Cuando se incumple el SLA
-│   └── EscalationRule.java           # Reglas: si pasa X tiempo sin resolver, escalar a nivel 2
+├── view/
+│   ├── LoginView.java
+│   ├── DashboardView.java
+│   ├── IncidenteView.java
+│   └── ReporteView.java
 │
-└── communication/
-    ├── Comment.java                  # Nota (con autor, timestamp, si es interna o pública)
-    └── Attachment.java               # Archivo adjunto (nombre, ruta, tamaño, tipo MIME)
+├── enums/
+│   ├── EstadoIncidente.java
+│   ├── Prioridad.java
+│   └── RolUsuario.java
+│
+├── utils/
+│   ├── ConexionBD.java
+│   └── Validador.java
+│
+└── main/
+    └── Main.java
