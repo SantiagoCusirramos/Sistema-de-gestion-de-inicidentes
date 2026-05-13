@@ -86,16 +86,17 @@ public class IncidenteView {
             Button btnCambiarEstado = new Button("Cambiar Estado");
             btnCambiarEstado.setOnAction(e -> mostrarDialogoCambiarEstado());
             barra.getChildren().add(btnCambiarEstado);
-        }
 
-        Button btnCerrar = new Button("Cerrar");
-        btnCerrar.setStyle("-fx-background-color: #6a1b9a; -fx-text-fill: white;");
-        btnCerrar.setOnAction(e -> mostrarDialogoCerrar());
+            Button btnCerrar = new Button("Cerrar");
+            btnCerrar.setStyle("-fx-background-color: #6a1b9a; -fx-text-fill: white;");
+            btnCerrar.setOnAction(e -> mostrarDialogoCerrar());
+            barra.getChildren().add(btnCerrar);
+        }
 
         Button btnComentar = new Button("Agregar Comentario");
         btnComentar.setOnAction(e -> mostrarDialogoComentar());
 
-        barra.getChildren().addAll(btnCerrar, btnComentar);
+        barra.getChildren().add(btnComentar);
         return barra;
     }
 

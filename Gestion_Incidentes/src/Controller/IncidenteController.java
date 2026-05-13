@@ -79,13 +79,7 @@ public class IncidenteController {
         }
 
         if (usuarioActual.getRol() == RolUsuario.USUARIO) {
-            Incidente inc = incidenteService.getIncidentePorId(incidenteId);
-            if (inc == null) {
-                throw new IncidenteException("El incidente con ID " + incidenteId + " no existe");
-            }
-            if (inc.getUsuarioId() != usuarioActual.getId()) {
-                throw new PermisoDenegadoException("Solo el creador del incidente puede cerrarlo");
-            }
+            throw new PermisoDenegadoException("Los usuarios no pueden cerrar incidentes. Solo tecnicos o administradores.");
         }
 
         return incidenteService.cerrarIncidente(incidenteId, usuarioActual.getId());
