@@ -10,23 +10,25 @@ src/
 │   ├── IncidenteDAO.java         ✅
 │   ├── UsuarioDAO.java           ✅
 │   ├── ComentarioDAO.java        ✅
-│   └── Implementacion/           ✅
-│       └── UsuarioDAOImpl        ✅
+│   └── implementacion/
+│       ├── UsuarioDAOImpl.java   ✅
+│       ├── IncidenteDAOImpl.java ❗
+│       └── ComentarioDAOImpl.java ❗
 │
 ├── service/
-│   ├── IncidenteService.java     ✅
+│   ├── IncidenteService.java     ☀️
 │   ├── UsuarioService.java       ✅
-│   └── ReporteService.java       ✅
+│   └── ReporteService.java       ☀️
 │
 ├── controller/
-│   ├── IncidenteController.java
-│   └── AuthController.java       ✅
+│   ├── AuthController.java       ✅
+│   └── IncidenteController.java  ❗
 │
 ├── view/
-│   ├── LoginView.java
-│   ├── DashboardView.java
-│   ├── IncidenteView.java
-│   └── ReporteView.java
+│   ├── LoginView.java            ❗
+│   ├── DashboardView.java        ❗
+│   ├── IncidenteView.java        ❗
+│   └── ReporteView.java          ❗
 │
 ├── enums/
 │   ├── EstadoIncidente.java      ✅
@@ -37,8 +39,12 @@ src/
 │   ├── ConexionBD.java           ✅
 │   └── Validador.java            ✅
 │
-├── Exceptions/
+├── exceptions/
 │   ├── UsuarioException.java     ✅
+│   ├── IncidenteException.java   ❗
+│   ├── AutenticacionException.java ❗
+│   ├── ValidacionException.java  ❗
+│   ├── BaseDeDatosException.java ❗
+│   └── PermisoDenegadoException.java ❗
 │
-└── main/
-    └── Main.java
+└── Main.java                     ☀️
