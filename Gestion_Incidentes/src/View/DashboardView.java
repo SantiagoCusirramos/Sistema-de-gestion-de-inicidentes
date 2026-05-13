@@ -85,11 +85,14 @@ public class DashboardView {
         tabIncidentes.setClosable(false);
         tabIncidentes.setContent(incidenteView.getContenido());
 
-        Tab tabReportes = new Tab("Reportes");
-        tabReportes.setClosable(false);
-        tabReportes.setContent(reporteView.getContenido());
+        tabPane.getTabs().add(tabIncidentes);
 
-        tabPane.getTabs().addAll(tabIncidentes, tabReportes);
+        if (usuarioActual.getRol() != RolUsuario.USUARIO) {
+            Tab tabReportes = new Tab("Reportes");
+            tabReportes.setClosable(false);
+            tabReportes.setContent(reporteView.getContenido());
+            tabPane.getTabs().add(tabReportes);
+        }
 
         if (usuarioActual.getRol() == RolUsuario.ADMIN) {
             Tab tabUsuarios = new Tab("Usuarios");
