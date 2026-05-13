@@ -13,6 +13,10 @@ import java.util.stream.Collectors;
 public class ReporteService {
     private IncidenteDAO incidenteDAO;
 
+    public ReporteService() {
+        this.incidenteDAO = new DAOs.Implementacion.IncidenteDAOImpl();
+    }
+
     public int getTotalIncidentesPorEstado(EstadoIncidente estado) {
         return incidenteDAO.listarPorEstado(estado).size();
     }
