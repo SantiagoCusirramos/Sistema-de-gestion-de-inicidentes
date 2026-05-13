@@ -18,20 +18,21 @@ public class ConexionBD {
     // Constructor privado para patrón Singleton
     private ConexionBD() {}
 
-    // Obtener conexión (Singleton)
+    // Obtener conexión (Singleton con renovación automática)
     public static Connection getConnection() {
-        if (connection == null) {
-            try {
+        try {
+            if (connection == null || connection.isClosed()) {
+                connection = null;
                 Class.forName(DRIVER);
                 connection = DriverManager.getConnection(URL, USUARIO, PASSWORD);
                 System.out.println("✅ Conexión a base de datos establecida");
-            } catch (ClassNotFoundException e) {
-                System.err.println("❌ Error: Driver MySQL no encontrado");
-                e.printStackTrace();
-            } catch (SQLException e) {
-                System.err.println("❌ Error al conectar a la base de datos");
-                e.printStackTrace();
             }
+        } catch (ClassNotFoundException e) {
+            System.err.println("❌ Error: Driver MySQL no encontrado");
+            e.printStackTrace();
+        } catch (SQLException e) {
+            System.err.println("❌ Error al conectar a la base de datos");
+            e.printStackTrace();
         }
         return connection;
     }
@@ -61,6 +62,11 @@ public class ConexionBD {
 
     // Método para crear las tablas automáticamente (útil para primera ejecución)
     public static void inicializarBaseDatos() {
+        Connection conn = getConnection();
+        if (conn == null) {
+            System.err.println("❌ No se pudo inicializar la base de datos: conexion nula");
+            return;
+        }
         String crearTablaUsuarios = """
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INT PRIMARY KEY AUTO_INCREMENT,

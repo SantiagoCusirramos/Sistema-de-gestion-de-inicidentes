@@ -92,7 +92,7 @@ public class LoginView {
                 dashboard.mostrar(new Stage());
                 stage.close();
             } else {
-                lblMensaje.setText("Email o contrasena incorrectos");
+                lblMensaje.setText(authController.getUltimoError());
             }
         });
 
@@ -173,7 +173,7 @@ public class LoginView {
                 txtTelefono.clear();
             } else {
                 lblMensaje.setStyle("-fx-text-fill: red;");
-                lblMensaje.setText("Error al registrarse. El email podria ya estar en uso.");
+                lblMensaje.setText(authController.getUltimoError());
             }
         });
 

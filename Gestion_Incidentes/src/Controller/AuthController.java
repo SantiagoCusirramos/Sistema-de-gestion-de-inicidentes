@@ -10,10 +10,16 @@ public class AuthController {
 
     private UsuarioService usuarioService;
     private Usuario usuarioActual;
+    private String ultimoError;
 
     public AuthController() {
         this.usuarioService = new UsuarioService();
         this.usuarioActual = null;
+        this.ultimoError = "";
+    }
+
+    public String getUltimoError() {
+        return ultimoError;
     }
 
     public boolean registrar(String nombre, String email, String password, String rol) {
@@ -35,8 +41,12 @@ public class AuthController {
             }
 
             Usuario nuevoUsuario = usuarioService.registrarUsuario(nombre, email, password, rolUsuario);
+            if (nuevoUsuario == null) {
+                ultimoError = "No se pudo crear el usuario. Verifique la conexion a la base de datos.";
+            }
             return nuevoUsuario != null;
         } catch (UsuarioException e) {
+            ultimoError = e.getMessage();
             System.err.println("Error al registrar: " + e.getMessage());
             return false;
         }
@@ -45,8 +55,10 @@ public class AuthController {
     public boolean login(String email, String password) {
         try {
             usuarioActual = usuarioService.login(email, password);
+            ultimoError = "";
             return true;
         } catch (UsuarioException e) {
+            ultimoError = e.getMessage();
             System.err.println("Error de login: " + e.getMessage());
             return false;
         }
