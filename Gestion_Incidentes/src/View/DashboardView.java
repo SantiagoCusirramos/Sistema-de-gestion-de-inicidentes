@@ -1,11 +1,17 @@
 package View;
 
+import Exceptions.UsuarioException;
 import Model.Usuario;
+import Service.UsuarioService;
 import enums.RolUsuario;
+import javafx.beans.property.SimpleStringProperty;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
@@ -105,16 +111,111 @@ public class DashboardView {
     }
 
     private VBox crearPanelUsuarios() {
+        UsuarioService usuarioService = new UsuarioService();
+
         Label lblTitle = new Label("Administracion de Usuarios");
-        lblTitle.setFont(Font.font("Arial", FontWeight.BOLD, 16));
+        lblTitle.setFont(Font.font("Arial", FontWeight.BOLD, 18));
 
-        Label lblInfo = new Label("Funcionalidad en desarrollo.\n\n"
-                + "Proximamente: crear, editar y eliminar usuarios del sistema.");
-        lblInfo.setStyle("-fx-text-fill: #666; -fx-font-size: 14px;");
+        TableView<Usuario> tabla = new TableView<>();
+        tabla.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        tabla.setPlaceholder(new Label("No hay usuarios registrados"));
 
-        VBox panel = new VBox(20, lblTitle, lblInfo);
-        panel.setPadding(new Insets(30));
-        panel.setAlignment(Pos.TOP_CENTER);
+        TableColumn<Usuario, Integer> colId = new TableColumn<>("ID");
+        colId.setCellValueFactory(new PropertyValueFactory<>("id"));
+        colId.setPrefWidth(50);
+
+        TableColumn<Usuario, String> colNombre = new TableColumn<>("Nombre");
+        colNombre.setCellValueFactory(new PropertyValueFactory<>("nombre"));
+
+        TableColumn<Usuario, String> colEmail = new TableColumn<>("Email");
+        colEmail.setCellValueFactory(new PropertyValueFactory<>("email"));
+
+        TableColumn<Usuario, String> colRol = new TableColumn<>("Rol");
+        colRol.setCellValueFactory(cd ->
+                new SimpleStringProperty(cd.getValue().getRol().name()));
+
+        tabla.getColumns().addAll(colId, colNombre, colEmail, colRol);
+
+        ObservableList<Usuario> datos = FXCollections.observableArrayList();
+        tabla.setItems(datos);
+
+        HBox barra = new HBox(8);
+        barra.setPadding(new Insets(5, 0, 10, 0));
+
+        Button btnActualizar = new Button("Actualizar");
+        btnActualizar.setStyle("-fx-background-color: #1565c0; -fx-text-fill: white;");
+        btnActualizar.setOnAction(e -> cargarUsuarios(tabla, datos, usuarioService));
+
+        Button btnTecnico = new Button("Asignar Tecnico");
+        btnTecnico.setStyle("-fx-background-color: #e65100; -fx-text-fill: white;");
+        btnTecnico.setOnAction(e -> cambiarRol(tabla, usuarioService, RolUsuario.TECNICO));
+
+        Button btnRemover = new Button("Remover Tecnico");
+        btnRemover.setStyle("-fx-background-color: #6a1b9a; -fx-text-fill: white;");
+        btnRemover.setOnAction(e -> cambiarRol(tabla, usuarioService, RolUsuario.USUARIO));
+
+        barra.getChildren().addAll(btnActualizar, btnTecnico, btnRemover);
+        cargarUsuarios(tabla, datos, usuarioService);
+
+        VBox panel = new VBox(10, lblTitle, barra, tabla);
+        panel.setPadding(new Insets(20));
         return panel;
+    }
+
+    private void cargarUsuarios(TableView<Usuario> tabla, ObservableList<Usuario> datos,
+                                 UsuarioService usuarioService) {
+        datos.setAll(usuarioService.listarTodosUsuarios());
+    }
+
+    private void cambiarRol(TableView<Usuario> tabla, UsuarioService usuarioService,
+                             RolUsuario nuevoRol) {
+        Usuario seleccionado = tabla.getSelectionModel().getSelectedItem();
+        if (seleccionado == null) {
+            Alert alert = new Alert(Alert.AlertType.WARNING);
+            alert.setTitle("Seleccion");
+            alert.setHeaderText(null);
+            alert.setContentText("Seleccione un usuario de la tabla.");
+            alert.showAndWait();
+            return;
+        }
+
+        if (seleccionado.getId() == usuarioActual.getId()) {
+            Alert alert = new Alert(Alert.AlertType.WARNING);
+            alert.setTitle("Accion no permitida");
+            alert.setHeaderText(null);
+            alert.setContentText("No puede cambiar su propio rol.");
+            alert.showAndWait();
+            return;
+        }
+
+        String accion = (nuevoRol == RolUsuario.TECNICO) ? "asignar como tecnico" : "remover rol tecnico";
+
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+        confirm.setTitle("Confirmar cambio de rol");
+        confirm.setHeaderText("Usuario: " + seleccionado.getNombre() + " (" + seleccionado.getEmail() + ")");
+        confirm.setContentText("Esta seguro de que desea " + accion + "?");
+        if (confirm.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+
+        try {
+            usuarioService.actualizarUsuario(
+                    seleccionado.getId(),
+                    seleccionado.getNombre(),
+                    seleccionado.getEmail(),
+                    nuevoRol);
+
+            Alert info = new Alert(Alert.AlertType.INFORMATION);
+            info.setTitle("Rol actualizado");
+            info.setHeaderText(null);
+            info.setContentText("El rol de " + seleccionado.getNombre() + " ahora es " + nuevoRol.name() + ".");
+            info.showAndWait();
+
+            cargarUsuarios(tabla, tabla.getItems(), usuarioService);
+        } catch (UsuarioException e) {
+            Alert error = new Alert(Alert.AlertType.ERROR);
+            error.setTitle("Error");
+            error.setHeaderText(null);
+            error.setContentText(e.getMessage());
+            error.showAndWait();
+        }
     }
 }
