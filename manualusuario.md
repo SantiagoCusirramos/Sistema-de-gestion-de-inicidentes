@@ -36,8 +36,20 @@ C:\xampp\mysql\bin\mysql.exe -u root -e "CREATE DATABASE IF NOT EXISTS sistema_i
 
 Linux:
 
+En Linux, MySQL suele requerir autenticación. Para que el programa funcione, debes asegurarte de que la contraseña coincida con la configurada en `Utils/ConexionBD.java`.
+
+**Opción A: Dejar MySQL sin contraseña (recomendado para desarrollo)**
+
 ```
-sudo mysql -u root -e "CREATE DATABASE IF NOT EXISTS sistema_incidentes;"
+sudo mysql -u root
+```
+
+Dentro de MySql agregar el siguiente rool
+
+```
+ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';
+FLUSH PRIVILEGES;
+EXIT;
 ```
 
 
