@@ -21,6 +21,10 @@ Con Linux:
 
 ```
 sudo systemctl start mysql
+
+sudo systemctl status mysql
+
+sudo mysql -u root
 ```
 
 ### 2.2 Crear la base de datos
@@ -33,7 +37,7 @@ C:\xampp\mysql\bin\mysql.exe -u root -e "CREATE DATABASE IF NOT EXISTS sistema_i
 Linux:
 
 ```
-mysql -u root -e "CREATE DATABASE IF NOT EXISTS sistema_incidentes;"
+sudo mysql -u root -e "CREATE DATABASE IF NOT EXISTS sistema_incidentes;"
 ```
 
 
@@ -48,7 +52,7 @@ C:\xampp\mysql\bin\mysql.exe -u root sistema_incidentes < script_inicial.sql
 
 Linux:
 ```
-mysql -u root sistema_incidentes < script_inicial.sql
+sudo mysql -u root sistema_incidentes < script_inicial.sql
 ```
 
 O en caso de querer ir por la segura, ejecutar la siguiente instruccion dentro de tu terminal SQL:
