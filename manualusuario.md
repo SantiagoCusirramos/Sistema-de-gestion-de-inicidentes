@@ -154,23 +154,25 @@ CREATE TABLE IF NOT EXISTS notificaciones (
 
 -- Usuario administrador (contraseña: admin123 en Base64)
 INSERT INTO usuarios (nombre, email, password, rol, activo) VALUES 
-('Administrador del Sistema', 'admin@sistema.com', 'admin', 'ADMIN', TRUE);
+('Administrador del Sistema', 'admin@sistema.com', 'admin123', 'ADMIN', TRUE);
 
 -- Técnicos de ejemplo (contraseña: tecnico123 en Base64)
 INSERT INTO usuarios (nombre, email, password, rol, activo) VALUES 
-('Carlos Técnico', 'carlos.tecnico@sistema.com', 'dGVjbmljbzEyMw==', 'TECNICO', TRUE),
-('María Técnica', 'maria.tecnica@sistema.com', 'dGVjbmljbzEyMw==', 'TECNICO', TRUE);
+('Carlos Técnico', 'carlos.tecnico@sistema.com', 'carlostecnico', 'TECNICO', TRUE),
+('María Técnica', 'maria.tecnica@sistema.com', 'mariatecnica', 'TECNICO', TRUE);
 
 -- Usuarios normales de ejemplo (contraseña: usuario123 en Base64)
 INSERT INTO usuarios (nombre, email, password, rol, activo, telefono) VALUES 
-('Juan Pérez', 'juan.perez@ejemplo.com', 'dXN1YXJpbzEyMw==', 'USUARIO', TRUE, '555-1234'),
-('Ana Gómez', 'ana.gomez@ejemplo.com', 'dXN1YXJpbzEyMw==', 'USUARIO', TRUE, '555-5678');
+('Juan Pérez', 'juan.perez@ejemplo.com', 'juanperez', 'USUARIO', TRUE, '555-1234'),
+('Ana Gómez', 'ana.gomez@ejemplo.com', 'anagomez', 'USUARIO', TRUE, '555-5678');
+
 
 -- =====================================================
 -- 7. VERIFICACIÓN DE DATOS INSERTADOS
 -- =====================================================
 SELECT '=== USUARIOS CREADOS ===' as '';
 SELECT id, nombre, email, rol FROM usuarios;
+
 ```
 
 

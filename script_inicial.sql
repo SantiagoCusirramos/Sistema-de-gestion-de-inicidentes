@@ -94,6 +94,7 @@ INSERT INTO usuarios (nombre, email, password, rol, activo, telefono) VALUES
 ('Juan Pérez', 'juan.perez@ejemplo.com', 'juanperez', 'USUARIO', TRUE, '555-1234'),
 ('Ana Gómez', 'ana.gomez@ejemplo.com', 'anagomez', 'USUARIO', TRUE, '555-5678');
 
+
 -- =====================================================
 -- 7. VERIFICACIÓN DE DATOS INSERTADOS
 -- =====================================================
