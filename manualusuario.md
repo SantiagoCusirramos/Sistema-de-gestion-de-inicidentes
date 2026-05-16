@@ -1,227 +1,96 @@
-# Manual de Usuario - Sistema de Gestion de Incidentes
+# Manual de Usuario - Sistema de Gestión de Incidentes
 
 ## 1. Requisitos
 
 - **Java** JDK 21 o superior (recomendado JDK 25)
-- **MySQL** 8.0 o superior (o XAMPP con MySQL)
+- **MySQL** 8.0 o superior
 - **Maven** 3.9+ (para compilar y ejecutar)
 
 ---
 
-## 2. Como ejecutar el programa
+## 2. Cómo ejecutar el programa
 
 ### 2.1 Iniciar MySQL
 
-Con XAMPP en Windows:
-```
-C:\xampp\mysql\bin\mysqld.exe --console
-```
-
-Con Linux:
-
-```
+```bash
 sudo systemctl start mysql
-
 sudo systemctl status mysql
-
-sudo mysql -u root
 ```
 
 ### 2.2 Crear la base de datos
 
-Windows:
-```
-C:\xampp\mysql\bin\mysql.exe -u root -e "CREATE DATABASE IF NOT EXISTS sistema_incidentes;"
-```
-
-Linux:
-
-En Linux, MySQL suele requerir autenticación. Para que el programa funcione, debes asegurarte de que la contraseña coincida con la configurada en `Utils/ConexionBD.java`.
-
-**Opción A: Dejar MySQL sin contraseña (recomendado para desarrollo)**
-
-```
-sudo mysql -u root
+```bash
+sudo mysql -u root -e "CREATE DATABASE IF NOT EXISTS sistema_incidentes;"
 ```
 
-Dentro de MySql agregar el siguiente rool
+### 2.3 Configurar las variables de entorno
 
-```
-ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';
-FLUSH PRIVILEGES;
-EXIT;
-```
+Para las variables de entorno se recomienda realizar lo siguiente en la consola, antes de ejecutar el programa. Asegúrese de haber creado la base de datos (paso 2.2):
 
-
-### 2.3 Crear las tablas e inserts iniciales (PASO OBLIGATORIO PARA QUE FUNCIONE)
-
-Para ejecutar este comando, saber exactamente donde esta el script
-
-Windows:
-```
-C:\xampp\mysql\bin\mysql.exe -u root sistema_incidentes < script_inicial.sql
+```bash
+export DB_URL="jdbc:mysql://localhost:3306/sistema_incidentes?serverTimezone=UTC"
+export DB_USER="root"
+export DB_PASS=""
+export ADMIN_INITIAL_PASSWORD="Admin123@"
 ```
 
-Linux:
-```
-sudo mysql -u root sistema_incidentes < script_inicial.sql
-```
+### 2.4 Primera ejecución - Script automatizado
 
-O en caso de querer ir por la segura, ejecutar la siguiente instruccion dentro de tu terminal SQL:
+Después de haber realizado lo anterior, bastará con ejecutar alguno de los scripts. Actualmente se cuenta con soporte para:
 
-```
--- =====================================================
--- SISTEMA DE GESTIÓN DE INCIDENTES
--- Script completo de creación de tablas e inserts iniciales
--- =====================================================
+- **Arch Linux y sus variantes**: `manjaro.sh`
+- **Ubuntu y sus variantes**: `ubunto.sh`
 
-USE sistema_incidentes;
+Recuerde darles los permisos correspondientes antes de ejecutarlos:
 
--- =====================================================
--- 1. TABLA: usuarios
--- =====================================================
-CREATE TABLE IF NOT EXISTS usuarios (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    nombre VARCHAR(100) NOT NULL,
-    email VARCHAR(100) NOT NULL UNIQUE,
-    password VARCHAR(255) NOT NULL,
-    rol ENUM('ADMIN', 'TECNICO', 'USUARIO') NOT NULL DEFAULT 'USUARIO',
-    telefono VARCHAR(20),
-    activo BOOLEAN DEFAULT TRUE,
-    fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- =====================================================
--- 2. TABLA: incidentes
--- =====================================================
-CREATE TABLE IF NOT EXISTS incidentes (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    titulo VARCHAR(200) NOT NULL,
-    descripcion TEXT NOT NULL,
-    usuario_id INT NOT NULL,
-    tecnico_id INT NULL,
-    estado ENUM('PENDIENTE', 'EN_PROCESO', 'RESUELTO', 'CERRADO') NOT NULL DEFAULT 'PENDIENTE',
-    prioridad ENUM('BAJA', 'MEDIA', 'ALTA', 'CRITICA') NOT NULL DEFAULT 'MEDIA',
-    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_actualizacion TIMESTAMP NULL,
-    FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
-    FOREIGN KEY (tecnico_id) REFERENCES usuarios(id) ON DELETE SET NULL
-);
-
--- =====================================================
--- 3. TABLA: comentarios
--- =====================================================
-CREATE TABLE IF NOT EXISTS comentarios (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    incidente_id INT NOT NULL,
-    usuario_id INT NOT NULL,
-    mensaje TEXT NOT NULL,
-    es_interno BOOLEAN DEFAULT FALSE,
-    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (incidente_id) REFERENCES incidentes(id) ON DELETE CASCADE,
-    FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
-);
-
--- =====================================================
--- 4. TABLA: historial_estados
--- =====================================================
-CREATE TABLE IF NOT EXISTS historial_estados (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    incidente_id INT NOT NULL,
-    estado_anterior ENUM('PENDIENTE', 'EN_PROCESO', 'RESUELTO', 'CERRADO'),
-    estado_nuevo ENUM('PENDIENTE', 'EN_PROCESO', 'RESUELTO', 'CERRADO') NOT NULL,
-    usuario_id INT NOT NULL,
-    fecha_cambio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (incidente_id) REFERENCES incidentes(id) ON DELETE CASCADE,
-    FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
-);
-
--- =====================================================
--- 5. TABLA: notificaciones
--- =====================================================
-CREATE TABLE IF NOT EXISTS notificaciones (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    usuario_id INT NOT NULL,
-    mensaje TEXT NOT NULL,
-    leida BOOLEAN DEFAULT FALSE,
-    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
-);
-
--- =====================================================
--- 6. INSERTS INICIALES (DATOS POR DEFECTO)
--- =====================================================
-
--- Usuario administrador (contraseña: admin123 en Base64)
-INSERT INTO usuarios (nombre, email, password, rol, activo) VALUES 
-('Administrador del Sistema', 'admin@sistema.com', 'admin123', 'ADMIN', TRUE);
-
--- Técnicos de ejemplo (contraseña: tecnico123 en Base64)
-INSERT INTO usuarios (nombre, email, password, rol, activo) VALUES 
-('Carlos Técnico', 'carlos.tecnico@sistema.com', 'carlostecnico', 'TECNICO', TRUE),
-('María Técnica', 'maria.tecnica@sistema.com', 'mariatecnica', 'TECNICO', TRUE);
-
--- Usuarios normales de ejemplo (contraseña: usuario123 en Base64)
-INSERT INTO usuarios (nombre, email, password, rol, activo, telefono) VALUES 
-('Juan Pérez', 'juan.perez@ejemplo.com', 'juanperez', 'USUARIO', TRUE, '555-1234'),
-('Ana Gómez', 'ana.gomez@ejemplo.com', 'anagomez', 'USUARIO', TRUE, '555-5678');
-
-
--- =====================================================
--- 7. VERIFICACIÓN DE DATOS INSERTADOS
--- =====================================================
-SELECT '=== USUARIOS CREADOS ===' as '';
-SELECT id, nombre, email, rol FROM usuarios;
-
+```bash
+chmod +x ubunto.sh
+./ubunto.sh
 ```
 
-
-
-### 2.4 Compilar y ejecutar
-
-Windows:
-```powershell
-cd Gestion_Incidentes
-$env:JAVA_HOME = "C:\Program Files\Java\jdk-25.0.2"
-C:\tools\apache-maven-3.9.8\bin\mvn.cmd clean javafx:run
+```bash
+chmod +x manjaro.sh
+./manjaro.sh
 ```
 
-> En la primera ejecucion, el programa crea automaticamente las 5 tablas e inserta el usuario administrador por defecto, en caso esto falle, se ha colocado la solucion en el paso 2.3 
+### 2.5 Compilar y ejecutar (ejecuciones posteriores)
 
-Linux:
+Después de la primera ejecución con el script, si desea ejecutar nuevamente la aplicación, bastará con ubicarse en el proyecto y ejecutarlo con Maven:
 
-```
-cd Gestion_Incidentes
+```bash
+cd Gestion_Incidentes   # En caso de estar en la carpeta raíz, nos movemos al directorio del proyecto
 mvn clean javafx:run
 ```
 
----
+> **Nota:** En la primera ejecución, el programa crea automáticamente las 5 tablas e inserta el usuario administrador por defecto, tomando la contraseña del administrador desde la variable de entorno `ADMIN_INITIAL_PASSWORD`. Se aplican ciertos criterios de seguridad.
 
+---
 
 ## 3. Credenciales por defecto
 
-| Rol | Email | Contrasena |
-|---|---|---|
-| **ADMIN** | `admin@sistema.com` | `admin123` |
-| **TECNICO** | `carlos.tecnico@sistema.com` | `tecnico123` |
-| **TECNICO** | `maria.tecnica@sistema.com` | `tecnico123` |
-| **USUARIO** | `juan.perez@ejemplo.com` | `usuario123` |
-| **USUARIO** | `ana.gomez@ejemplo.com` | `usuario123` |
----
+Para saber cómo configurar las variables de entorno, revise el paso 2.3.
 
+| Rol | Email | Contraseña |
+|---|---|---|
+| **ADMIN** | `admin@sistema.in` | `Valor de la variable de entorno ADMIN_INITIAL_PASSWORD` |
+
+> La contraseña del administrador se define mediante la variable de entorno `ADMIN_INITIAL_PASSWORD`. En los ejemplos se usa `Admin123@`, pero usted puede elegir cualquier contraseña que cumpla con los criterios de seguridad.
+
+---
 
 ## 4. Roles y permisos
 
-| Accion | ADMIN | TECNICO | USUARIO |
+| Acción | ADMIN | TECNICO | USUARIO |
 |---|---|---|---|
 | Crear incidente | ✓ | ✓ | ✓ |
 | Ver todos los incidentes | ✓ | Solo los suyos | Solo los suyos |
-| Asignar tecnico | ✓ | ✗ | ✗ |
+| Asignar técnico | ✓ | ✗ | ✗ |
 | Resolver incidente | ✓ | ✓ | ✗ |
 | Cambiar estado | ✓ | ✓ | ✗ |
 | Cerrar incidente | ✓ | Solo los suyos | Solo los suyos |
 | Agregar comentarios | ✓ | ✓ | ✓ |
-| Ver reportes | ✓ | ✓ | Solo sus stats |
+| Ver reportes | ✓ | ✓ | Solo sus estadísticas |
+| Administrar usuarios | ✓ | ✗ | ✗ |
 
 ---
 
@@ -229,42 +98,42 @@ mvn clean javafx:run
 
 ### 5.1 Pantalla de login
 
-Al iniciar aparecen dos pestanas:
+Al iniciar aparecen dos pestañas:
 
-- **Iniciar Sesion**: Ingrese email y contrasena, luego haga clic en "Iniciar Sesion".
-- **Registrarse**: Complete nombre, email, contrasena (min. 6 caracteres) y confirme. Los nuevos usuarios siempre se crean con rol USUARIO.
+- **Iniciar Sesión**: Ingrese email y contraseña, luego haga clic en "Iniciar Sesión".
+- **Registrarse**: Complete nombre, email, contraseña (mín. 6 caracteres) y confirme. Los nuevos usuarios siempre se crean con rol USUARIO.
 
 ### 5.2 Panel principal (Dashboard)
 
-Una vez autenticado, se abre el panel con pestanas:
+Una vez autenticado, se abre el panel con pestañas:
 
-- **Incidentes**: Gestion completa de incidentes.
-- **Reportes**: Estadisticas y graficos.
-- **Usuarios** (solo ADMIN): Administracion de usuarios.
+- **Incidentes**: Gestión completa de incidentes.
+- **Reportes**: Estadísticas y gráficos.
+- **Usuarios** (solo ADMIN): Administración de usuarios.
 
-En la barra superior se muestra su nombre, rol y un boton para cerrar sesion.
+En la barra superior se muestra su nombre, rol y un botón para cerrar sesión.
 
-### 5.3 Gestion de incidentes
+### 5.3 Gestión de incidentes
 
-La pestana "Incidentes" contiene una tabla con todos los incidentes visibles segun su rol y una barra de herramientas con botones:
+La pestaña "Incidentes" contiene una tabla con todos los incidentes visibles según su rol y una barra de herramientas con botones:
 
-1. **Nuevo Incidente**: Abre un dialogo para ingresar titulo, descripcion y prioridad (Baja/Media/Alta/Critica).
-2. **Ver Detalle**: Muestra la informacion completa del incidente seleccionado, incluyendo comentarios.
-3. **Asignar Tecnico** (solo ADMIN): Permite elegir un tecnico de la lista para que atienda el incidente. Al asignarlo, el estado cambia automaticamente a "EN_PROCESO".
-4. **Resolver** (TECNICO/ADMIN): Solicita una descripcion de la solucion. El estado pasa a "RESUELTO" y se registra la solucion como comentario.
-5. **Cambiar Estado** (TECNICO/ADMIN): Permite cambiar manualmente entre Pendiente/En Proceso/Resuelto/Cerrado.
+1. **Nuevo Incidente**: Abre un diálogo para ingresar título, descripción y prioridad (Baja/Media/Alta/Crítica).
+2. **Ver Detalle**: Muestra la información completa del incidente seleccionado, incluyendo comentarios.
+3. **Asignar Técnico** (solo ADMIN): Permite elegir un técnico de la lista para que atienda el incidente. Al asignarlo, el estado cambia automáticamente a "EN_PROCESO".
+4. **Resolver** (TÉCNICO/ADMIN): Solicita una descripción de la solución. El estado pasa a "RESUELTO" y se registra la solución como comentario.
+5. **Cambiar Estado** (TÉCNICO/ADMIN): Permite cambiar manualmente entre Pendiente/En Proceso/Resuelto/Cerrado.
 6. **Cerrar**: El creador del incidente o un ADMIN pueden cerrarlo definitivamente.
-7. **Agregar Comentario**: Anade un comentario al incidente seleccionado.
+7. **Agregar Comentario**: Añade un comentario al incidente seleccionado.
 8. **Actualizar**: Recarga la tabla de incidentes.
 
-### 5.4 Reportes y estadisticas
+### 5.4 Reportes y estadísticas
 
-La pestana "Reportes" muestra:
+La pestaña "Reportes" muestra:
 
-- **Tarjetas de resumen**: Total, Pendientes, En Proceso, Resueltos, Cerrados (con codigo de colores).
-- **Grafico de pastel**: Distribucion de incidentes por prioridad.
-- **Grafico de barras**: Incidentes agrupados por estado.
-- **Tabla de recientes**: Los ultimos 15 incidentes creados.
+- **Tarjetas de resumen**: Total, Pendientes, En Proceso, Resueltos, Cerrados (con código de colores).
+- **Gráfico de pastel**: Distribución de incidentes por prioridad.
+- **Gráfico de barras**: Incidentes agrupados por estado.
+- **Tabla de recientes**: Los últimos 15 incidentes creados.
 
 ---
 
@@ -273,21 +142,21 @@ La pestana "Reportes" muestra:
 ```
 Main (JavaFX Application)
   |
-  +-- LoginView (ventana de autenticacion)
+  +-- LoginView (ventana de autenticación)
   |     +-- AuthController
   |           +-- UsuarioService
   |                 +-- UsuarioDAOImpl --> Base de datos
   |
-  +-- DashboardView (panel principal con pestanas)
+  +-- DashboardView (panel principal con pestañas)
         |
-        +-- IncidenteView (pestana de incidentes)
+        +-- IncidenteView (pestaña de incidentes)
         |     +-- IncidenteController
         |           +-- IncidenteService
         |           |     +-- IncidenteDAOImpl --> Base de datos
         |           |     +-- ComentarioDAOImpl --> Base de datos
         |           +-- UsuarioService
         |
-        +-- ReporteView (pestana de reportes)
+        +-- ReporteView (pestaña de reportes)
               +-- IncidenteController
               +-- ReporteService
                     +-- IncidenteDAOImpl --> Base de datos
@@ -295,72 +164,127 @@ Main (JavaFX Application)
 
 **Capas del software:**
 
-- **View** (JavaFX): Interfaz grafica con ventanas, tablas, botones y graficos.
+- **View** (JavaFX): Interfaz gráfica con ventanas, tablas, botones y gráficos.
 - **Controller**: Orquesta las operaciones, valida permisos y protege las reglas de negocio.
-- **Service**: Logica de negocio (crear incidentes, autenticar, generar reportes).
-- **DAO** (Data Access Object): Operaciones CRUD contra la base de datos via JDBC.
+- **Service**: Lógica de negocio (crear incidentes, autenticar, generar reportes).
+- **DAO** (Data Access Object): Operaciones CRUD contra la base de datos vía JDBC.
 - **Model**: Objetos que representan las entidades (Usuario, Incidente, Comentario).
-- **Exceptions**: Clases de error especificas para cada tipo de fallo.
+- **Exceptions**: Clases de error específicas para cada tipo de fallo.
 
 ---
 
-## 7. Donde y como se almacenan los datos
+## 7. Estructura de la base de datos
 
-### Base de datos: MySQL
+El programa utiliza MySQL como motor de base de datos. La conexión se establece mediante `localhost:3306` y los datos se almacenan en la base de datos `sistema_incidentes`. La configuración se lee desde las variables de entorno definidas en el paso 2.3.
 
-El programa se conecta a MySQL en `localhost:3306` y almacena todo en la base de datos `sistema_incidentes`. La configuracion esta en `Utils/ConexionBD.java`:
+A continuación, se detalla la estructura completa de las **5 tablas** que componen la base de datos:
 
-```java
-URL = "jdbc:mysql://localhost:3306/sistema_incidentes"
-USUARIO = "root"
-PASSWORD = ""
+---
+
+### 7.1 Tabla `usuarios`
+
+Almacena la información de todos los usuarios del sistema.
+
+| Columna | Tipo | Restricciones | Descripción |
+|---|---|---|---|
+| `id` | INT | PRIMARY KEY, AUTO_INCREMENT | Identificador único del usuario |
+| `nombre` | VARCHAR(100) | NOT NULL | Nombre completo del usuario |
+| `email` | VARCHAR(100) | NOT NULL, UNIQUE | Correo electrónico (usado para login) |
+| `password` | VARCHAR(255) | NOT NULL | Contraseña encriptada con BCrypt |
+| `rol` | ENUM('ADMIN','TECNICO','USUARIO') | NOT NULL | Rol del usuario en el sistema |
+| `telefono` | VARCHAR(20) | NULLABLE | Número de teléfono (opcional) |
+| `activo` | BOOLEAN | DEFAULT TRUE | Indica si la cuenta está activa |
+| `fecha_registro` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha y hora de creación de la cuenta |
+| `ultimo_login` | TIMESTAMP | NULLABLE | Último inicio de sesión registrado |
+| `intentos_fallidos` | INT | NOT NULL DEFAULT 0 | Contador de intentos fallidos de login |
+| `bloqueado_hasta` | TIMESTAMP | NULLABLE | Fecha hasta la que la cuenta está bloqueada |
+
+---
+
+### 7.2 Tabla `incidentes`
+
+Almacena los incidentes reportados por los usuarios.
+
+| Columna | Tipo | Restricciones | Descripción |
+|---|---|---|---|
+| `id` | INT | PRIMARY KEY, AUTO_INCREMENT | Identificador único del incidente |
+| `titulo` | VARCHAR(200) | NOT NULL | Título breve del incidente |
+| `descripcion` | TEXT | NOT NULL | Descripción detallada del problema |
+| `usuario_id` | INT | NOT NULL, FOREIGN KEY → usuarios(id) | Usuario que reportó el incidente |
+| `tecnico_id` | INT | NULLABLE, FOREIGN KEY → usuarios(id) | Técnico asignado (si existe) |
+| `estado` | ENUM('PENDIENTE','EN_PROCESO','RESUELTO','CERRADO') | NOT NULL DEFAULT 'PENDIENTE' | Estado actual del incidente |
+| `prioridad` | ENUM('BAJA','MEDIA','ALTA','CRITICA') | NOT NULL DEFAULT 'MEDIA' | Nivel de prioridad |
+| `fecha_creacion` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha de creación del incidente |
+| `fecha_actualizacion` | TIMESTAMP | NULLABLE | Última modificación del incidente |
+
+---
+
+### 7.3 Tabla `comentarios`
+
+Almacena los comentarios asociados a cada incidente.
+
+| Columna | Tipo | Restricciones | Descripción |
+|---|---|---|---|
+| `id` | INT | PRIMARY KEY, AUTO_INCREMENT | Identificador único del comentario |
+| `incidente_id` | INT | NOT NULL, FOREIGN KEY → incidentes(id) | Incidente al que pertenece el comentario |
+| `usuario_id` | INT | NOT NULL, FOREIGN KEY → usuarios(id) | Usuario que escribió el comentario |
+| `mensaje` | TEXT | NOT NULL | Contenido del comentario |
+| `es_interno` | BOOLEAN | DEFAULT FALSE | Indica si es un comentario interno (solo técnicos/ADMIN) |
+| `fecha` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha y hora del comentario |
+
+---
+
+### 7.4 Tabla `historial_estados`
+
+Registra cada cambio de estado que sufre un incidente, permitiendo la trazabilidad completa.
+
+| Columna | Tipo | Restricciones | Descripción |
+|---|---|---|---|
+| `id` | INT | PRIMARY KEY, AUTO_INCREMENT | Identificador único del registro |
+| `incidente_id` | INT | NOT NULL, FOREIGN KEY → incidentes(id) | Incidente afectado |
+| `estado_anterior` | ENUM('PENDIENTE','EN_PROCESO','RESUELTO','CERRADO') | NULLABLE | Estado previo al cambio |
+| `estado_nuevo` | ENUM('PENDIENTE','EN_PROCESO','RESUELTO','CERRADO') | NOT NULL | Estado después del cambio |
+| `usuario_id` | INT | NOT NULL, FOREIGN KEY → usuarios(id) | Usuario que realizó el cambio |
+| `fecha_cambio` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Momento exacto del cambio |
+
+---
+
+### 7.5 Tabla `notificaciones`
+
+Sistema de notificaciones pendientes para los usuarios (funcionalidad preparada para futuras versiones).
+
+| Columna | Tipo | Restricciones | Descripción |
+|---|---|---|---|
+| `id` | INT | PRIMARY KEY, AUTO_INCREMENT | Identificador único de la notificación |
+| `usuario_id` | INT | NOT NULL, FOREIGN KEY → usuarios(id) | Usuario destinatario |
+| `mensaje` | TEXT | NOT NULL | Contenido de la notificación |
+| `leida` | BOOLEAN | DEFAULT FALSE | Indica si el usuario ya la ha leído |
+| `fecha_creacion` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha de generación de la notificación |
+
+---
+
+### 7.6 Resumen de relaciones entre tablas
+
+```
+usuarios (1) ──────< (N) incidentes      (un usuario crea muchos incidentes)
+usuarios (1) ──────< (N) incidentes      (un técnico atiende muchos incidentes)
+incidentes (1) ─────< (N) comentarios    (un incidente tiene muchos comentarios)
+incidentes (1) ─────< (N) historial      (un incidente tiene muchos cambios de estado)
+usuarios (1) ──────< (N) notificaciones  (un usuario recibe muchas notificaciones)
 ```
 
-### Estructura de la base de datos (5 tablas)
+---
 
-**usuarios**
-| Columna | Tipo | Descripcion |
-|---|---|---|
-| id | INT (PK, AUTO_INCREMENT) | Identificador unico |
-| nombre | VARCHAR(100) | Nombre del usuario |
-| email | VARCHAR(100) (UNIQUE) | Correo electronico |
-| password | VARCHAR(255) | Contrasena codificada en Base64 |
-| rol | ENUM(ADMIN,TECNICO,USUARIO) | Rol del usuario |
-| telefono | VARCHAR(20) | Telefono (opcional) |
-| activo | BOOLEAN | Si la cuenta esta activa |
-| fecha_registro | TIMESTAMP | Fecha de creacion |
+### 7.7 Seguridad de contraseñas
 
-**incidentes**
-| Columna | Tipo | Descripcion |
-|---|---|---|
-| id | INT (PK, AUTO_INCREMENT) | Identificador unico |
-| titulo | VARCHAR(200) | Titulo del incidente |
-| descripcion | TEXT | Descripcion detallada |
-| usuario_id | INT (FK -> usuarios) | Creador del incidente |
-| tecnico_id | INT (FK -> usuarios, NULL) | Tecnico asignado |
-| estado | ENUM(PENDIENTE,EN_PROCESO,RESUELTO,CERRADO) | Estado actual |
-| prioridad | ENUM(BAJA,MEDIA,ALTA,CRITICA) | Nivel de prioridad |
-| fecha_creacion | TIMESTAMP | Cuando se creo |
-| fecha_actualizacion | TIMESTAMP (NULL) | Ultima modificacion |
+Las contraseñas de los usuarios **no se almacenan en texto plano**. El sistema utiliza **BCrypt**, un algoritmo de hash diseñado específicamente para contraseñas, que incluye un "salt" (valor añadido) y es computacionalmente costoso para dificultar ataques de fuerza bruta.
 
-**comentarios**
-| Columna | Tipo | Descripcion |
-|---|---|---|
-| id | INT (PK, AUTO_INCREMENT) | Identificador |
-| incidente_id | INT (FK -> incidentes) | Incidente asociado |
-| usuario_id | INT (FK -> usuarios) | Autor del comentario |
-| mensaje | TEXT | Contenido del comentario |
-| fecha | TIMESTAMP | Cuando se publico |
+```java
+// Ejemplo de encriptación con BCrypt
+String passwordEncriptada = BCrypt.hashpw(password, BCrypt.gensalt());
+```
 
-**historial_estados** - Registra cada cambio de estado en los incidentes.
-**notificaciones** - Alertas pendientes para los usuarios (funcionalidad preparada para futuro).
-
-### Como se conecta y almacena
-
-1. **Conexion Singleton**: `ConexionBD.getConnection()` mantiene una unica conexion abierta durante toda la ejecucion, reutilizandola para todas las consultas.
-2. **DAO con JDBC**: Cada operacion (crear, leer, actualizar, eliminar) se ejecuta mediante `PreparedStatement` de JDBC, lo que previene inyeccion SQL.
-3. **Auto-creacion de tablas**: Al iniciar, `ConexionBD.inicializarBaseDatos()` ejecuta `CREATE TABLE IF NOT EXISTS` para las 5 tablas. Si ya existen, no las modifica.
-4. **Contrasenas**: Se almacenan codificadas en Base64 (no es criptografia segura, es una simplificacion educativa).
+> **Nota:** BCrypt es el estándar recomendado para almacenamiento de contraseñas en aplicaciones Java. A diferencia de Base64 (que es codificación reversible), BCrypt es un hash unidireccional y seguro.
 
 ---
 
@@ -373,7 +297,7 @@ PASSWORD = ""
      | (PENDIENTE)    |                |
      |----+---------->|                |
      |                | 2. Asigna      |
-     |                |    tecnico     |
+     |                |    técnico     |
      |                |    (EN_PROCESO) |
      |                |----+---------->|
      |                |                | 3. Resuelve
@@ -391,9 +315,93 @@ PASSWORD = ""
 
 ## 9. Posibles errores y soluciones
 
-| Problema | Causa | Solucion |
+| Problema | Causa | Solución |
 |---|---|---|
-| "Driver MySQL no encontrado" | Falta el JAR del conector MySQL | Maven lo descarga automaticamente |
-| "Error al conectar a la base de datos" | MySQL no esta corriendo | Ejecutar `mysqld.exe` o iniciar el servicio |
-| Pantalla en blanco al ejecutar | JavaFX no encuentra modulo grafico | Usar `mvn clean javafx:run` en vez de `java` directamente |
-| Error "Unknown database 'sistema_incidentes'" | La BD no fue creada | Ejecutar `CREATE DATABASE sistema_incidentes` en MySQL |
+| `Variable de entorno ADMIN_INITIAL_PASSWORD no configurada` | Falta la variable de entorno | Ejecutar `export ADMIN_INITIAL_PASSWORD="Admin123@"` |
+| `Access denied for user 'root'@'localhost'` | Contraseña de MySQL incorrecta | Ejecutar `sudo mysql` y luego `ALTER USER 'root'@'localhost' IDENTIFIED BY '';` |
+| `Unknown database 'sistema_incidentes'` | La base de datos no fue creada | Ejecutar `sudo mysql -e "CREATE DATABASE sistema_incidentes;"` |
+| `Connection refused` | MySQL no está corriendo | Ejecutar `sudo systemctl start mysql` |
+| Pantalla en blanco al ejecutar | JavaFX no encuentra módulos gráficos | Usar `mvn clean javafx:run` en lugar de `java -jar` |
+| `Driver not found` | Falta el conector MySQL | Maven descarga la dependencia automáticamente al compilar |
+| `Tablas no encontradas` | La base de datos no está inicializada | Ejecutar el script `.sh` correspondiente o crear las tablas manualmente |
+
+---
+
+## 10. Comandos útiles
+
+### Reiniciar todo desde cero
+
+```bash
+# 1. Borrar base de datos
+sudo mysql -u root -e "DROP DATABASE IF EXISTS sistema_incidentes;"
+
+# 2. Crear base de datos nueva
+sudo mysql -u root -e "CREATE DATABASE sistema_incidentes;"
+
+# 3. Ejecutar el script de inicialización
+./ubunto.sh   # o ./manjaro.sh según su distribución
+```
+
+### Ver datos en la base de datos
+
+```bash
+# Entrar a MySQL
+sudo mysql -u root
+
+# Seleccionar la base de datos y ver usuarios
+USE sistema_incidentes;
+SELECT id, nombre, email, rol FROM usuarios;
+
+# Ver incidentes
+SELECT * FROM incidentes;
+
+# Salir
+EXIT;
+```
+
+### Detener MySQL
+
+```bash
+sudo systemctl stop mysql
+```
+
+### Ver logs del programa
+
+Los logs se muestran directamente en la terminal donde se ejecutó `mvn javafx:run` o el script correspondiente.
+
+---
+
+## 11. Scripts de ayuda
+
+El proyecto incluye los siguientes scripts para facilitar la ejecución en diferentes distribuciones de Linux:
+
+| Script | Distribución | Función |
+|--------|--------------|---------|
+| `ubunto.sh` | Ubuntu y derivados (Debian, Pop!_OS, Linux Mint) | Instalación automática de dependencias, configuración de MySQL, creación de tablas y ejecución del programa |
+| `manjaro.sh` | Arch Linux y derivados (Manjaro, EndeavourOS, Garuda) | Misma funcionalidad pero adaptada para pacman (en lugar de apt) |
+
+### Cómo ejecutar los scripts
+
+```bash
+# Dar permisos de ejecución
+chmod +x ubunto.sh
+chmod +x manjaro.sh
+
+# Ejecutar según su distribución
+./ubunto.sh      # Para Ubuntu/Debian/Pop!_OS
+./manjaro.sh     # Para Arch/Manjaro
+```
+
+### Qué hace cada script
+
+1. **Actualiza los repositorios** del sistema.
+2. **Instala las dependencias** necesarias (Java JDK 21, Maven, MySQL, Git).
+3. **Inicializa y configura MySQL** (lo deja sin contraseña para desarrollo).
+4. **Crea la base de datos** `sistema_incidentes` si no existe.
+5. **Crea las tablas** necesarias (5 tablas).
+6. **Configura las variables de entorno** necesarias para el programa.
+7. **Compila el proyecto** con Maven.
+8. **Ejecuta la aplicación** (pregunta antes de hacerlo).
+
+> **Nota:** La primera ejecución del script puede tomar varios minutos mientras descarga e instala las dependencias. Las ejecuciones posteriores serán mucho más rápidas.
+```
