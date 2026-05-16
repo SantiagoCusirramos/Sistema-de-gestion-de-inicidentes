@@ -11,34 +11,72 @@ import org.mindrot.jbcrypt.BCrypt;
 
 import java.util.List;
 
+/**
+ * Correcciones aplicadas:
+ *  [SEC-009] Eliminado soporte de contraseñas en texto plano (legacy). Solo BCrypt.
+ *  [SEC-010] Protección contra fuerza bruta: bloqueo temporal tras intentos fallidos.
+ *            Se persiste en BD (columnas intentos_fallidos y bloqueado_hasta en usuarios).
+ */
 public class UsuarioService {
 
     private UsuarioDAO usuarioDAO;
     private Validador validador;
 
-    // Costo de BCrypt (10-12 es razonable)
-    private static final int BCRYPT_ROUNDS = 12;
+    private static final int BCRYPT_ROUNDS    = 12;
+    private static final int MAX_INTENTOS     = 5;
+    private static final long BLOQUEO_SEGUNDOS = 300L; // 5 minutos
+
+    // Límites de longitud [SEC-012]
+    static final int MAX_NOMBRE   = 100;
+    static final int MAX_EMAIL    = 100;
+    static final int MAX_PASSWORD = 128;
 
     public UsuarioService() {
         this.usuarioDAO = new UsuarioDAOImpl();
-        this.validador = new Validador();
+        this.validador  = new Validador();
     }
 
-    public Usuario registrarUsuario(String nombre, String email, String password, RolUsuario rol)
+    // -------------------------------------------------------------------------
+    // Registro
+    // -------------------------------------------------------------------------
+
+    /**
+     * Registra un usuario con rol USUARIO (rol fijo para autoregistro público).
+     * [SEC-004] El rol nunca viene del exterior en el registro público.
+     */
+    public Usuario registrarUsuario(String nombre, String email, String password)
+            throws UsuarioException {
+        return registrarUsuarioConRol(nombre, email, password, RolUsuario.USUARIO);
+    }
+
+    /**
+     * Registra un usuario con un rol específico.
+     * Solo debe ser invocado desde código con permisos de ADMIN ya verificados.
+     * [SEC-004] La validación de autorización se hace en AuthController antes de llamar aquí.
+     */
+    public Usuario registrarUsuarioConRol(String nombre, String email,
+                                          String password, RolUsuario rol)
             throws UsuarioException {
 
+        // Validaciones de entrada [SEC-012]
         if (nombre == null || nombre.trim().isEmpty()) {
             throw new UsuarioException("El nombre es obligatorio");
         }
-
+        if (nombre.trim().length() > MAX_NOMBRE) {
+            throw new UsuarioException("El nombre no puede superar " + MAX_NOMBRE + " caracteres");
+        }
         if (!validador.validarEmail(email)) {
             throw new UsuarioException("Email inválido");
         }
-
+        if (email.length() > MAX_EMAIL) {
+            throw new UsuarioException("El email no puede superar " + MAX_EMAIL + " caracteres");
+        }
         if (!validador.validarPassword(password)) {
             throw new UsuarioException("La contraseña debe tener al menos 6 caracteres");
         }
-
+        if (password.length() > MAX_PASSWORD) {
+            throw new UsuarioException("La contraseña no puede superar " + MAX_PASSWORD + " caracteres");
+        }
         if (usuarioDAO.buscarPorEmail(email.toLowerCase().trim()) != null) {
             throw new UsuarioException("El email ya está registrado");
         }
@@ -51,39 +89,86 @@ public class UsuarioService {
         usuario.setFechaRegistro(java.time.LocalDateTime.now());
 
         int id = usuarioDAO.crear(usuario);
+        if (id == -1) {
+            throw new UsuarioException("No se pudo crear el usuario. Verifique la conexión a la base de datos.");
+        }
         return usuarioDAO.buscar(id);
     }
 
+    // -------------------------------------------------------------------------
+    // Login con protección contra fuerza bruta [SEC-010]
+    // -------------------------------------------------------------------------
+
     public Usuario login(String email, String password) throws UsuarioException {
-        if (email == null || email.trim().isEmpty()) {
-            throw new UsuarioException("Email y contraseña son obligatorios");
-        }
-        if (password == null || password.trim().isEmpty()) {
+        if (email == null || email.trim().isEmpty() ||
+            password == null || password.trim().isEmpty()) {
             throw new UsuarioException("Email y contraseña son obligatorios");
         }
 
         String emailNormalizado = email.toLowerCase().trim();
         Usuario usuario = usuarioDAO.buscarPorEmail(emailNormalizado);
 
+        // Siempre verificar, incluso si el usuario no existe,
+        // para evitar timing attacks basados en la existencia de la cuenta.
         if (usuario == null) {
+            // Simulamos el tiempo de BCrypt para no revelar existencia del usuario
+            BCrypt.checkpw(password, "$2a$12$invalidhashfortimingnormalization00000000000000000000000");
             throw new UsuarioException("Credenciales incorrectas");
         }
 
-        String passwordAlmacenada = usuario.getPassword();
+        // [SEC-010] Verificar si la cuenta está bloqueada
+        verificarBloqueo(usuario);
 
-        if (!verificarPassword(password, passwordAlmacenada)) {
+        // [SEC-009] Solo BCrypt. No se acepta texto plano.
+        boolean credencialesValidas = verificarPasswordBcrypt(password, usuario.getPassword());
+
+        if (!credencialesValidas) {
+            registrarIntentoFallido(usuario);
             throw new UsuarioException("Credenciales incorrectas");
         }
 
-        // Migración automática: si la contraseña estaba en texto plano,
-        // se reemplaza por un hash BCrypt al primer login exitoso.
-        if (esTextoPlano(passwordAlmacenada)) {
-            usuario.setPassword(encriptarPassword(password));
-            usuarioDAO.actualizar(usuario);
-        }
-
+        // Login exitoso: reiniciar contador de intentos
+        resetearIntentosFallidos(usuario);
         return usuario;
     }
+
+    // -------------------------------------------------------------------------
+    // Gestión de intentos fallidos [SEC-010]
+    // -------------------------------------------------------------------------
+
+    private void verificarBloqueo(Usuario usuario) throws UsuarioException {
+        java.time.LocalDateTime bloqueadoHasta = usuarioDAO.getBloqueadoHasta(usuario.getId());
+        if (bloqueadoHasta != null &&
+            bloqueadoHasta.isAfter(java.time.LocalDateTime.now())) {
+
+            long segundosRestantes = java.time.Duration.between(
+                java.time.LocalDateTime.now(), bloqueadoHasta).getSeconds();
+            throw new UsuarioException(
+                "Cuenta bloqueada temporalmente por demasiados intentos fallidos. " +
+                "Intente de nuevo en " + Math.max(1, segundosRestantes / 60) + " minuto(s).");
+        }
+    }
+
+    private void registrarIntentoFallido(Usuario usuario) {
+        int intentosActuales = usuarioDAO.getIntentosFallidos(usuario.getId()) + 1;
+        if (intentosActuales >= MAX_INTENTOS) {
+            java.time.LocalDateTime bloqueadoHasta =
+                java.time.LocalDateTime.now().plusSeconds(BLOQUEO_SEGUNDOS);
+            usuarioDAO.setBloqueadoHasta(usuario.getId(), bloqueadoHasta);
+            usuarioDAO.setIntentosFallidos(usuario.getId(), 0);
+        } else {
+            usuarioDAO.setIntentosFallidos(usuario.getId(), intentosActuales);
+        }
+    }
+
+    private void resetearIntentosFallidos(Usuario usuario) {
+        usuarioDAO.setIntentosFallidos(usuario.getId(), 0);
+        usuarioDAO.setBloqueadoHasta(usuario.getId(), null);
+    }
+
+    // -------------------------------------------------------------------------
+    // Gestión de usuarios
+    // -------------------------------------------------------------------------
 
     public Usuario actualizarUsuario(int id, String nombre, String email, RolUsuario rol)
             throws UsuarioException {
@@ -93,11 +178,14 @@ public class UsuarioService {
             throw new UsuarioException("Usuario no encontrado");
         }
 
-        String emailNormalizado = email != null ? email.toLowerCase().trim() : "";
+        String emailNormalizado = (email != null) ? email.toLowerCase().trim() : "";
 
         if (!usuario.getEmail().equals(emailNormalizado)) {
             if (!validador.validarEmail(emailNormalizado)) {
                 throw new UsuarioException("Email inválido");
+            }
+            if (emailNormalizado.length() > MAX_EMAIL) {
+                throw new UsuarioException("El email no puede superar " + MAX_EMAIL + " caracteres");
             }
             if (usuarioDAO.buscarPorEmail(emailNormalizado) != null) {
                 throw new UsuarioException("El email ya está en uso");
@@ -106,11 +194,13 @@ public class UsuarioService {
         }
 
         if (nombre != null && !nombre.trim().isEmpty()) {
+            if (nombre.trim().length() > MAX_NOMBRE) {
+                throw new UsuarioException("El nombre no puede superar " + MAX_NOMBRE + " caracteres");
+            }
             usuario.setNombre(nombre.trim());
         }
 
         usuario.setRol(rol);
-
         usuarioDAO.actualizar(usuario);
         return usuarioDAO.buscar(id);
     }
@@ -123,12 +213,16 @@ public class UsuarioService {
             throw new UsuarioException("Usuario no encontrado");
         }
 
-        if (!verificarPassword(passwordActual, usuario.getPassword())) {
+        // [SEC-009] Solo BCrypt
+        if (!verificarPasswordBcrypt(passwordActual, usuario.getPassword())) {
             throw new UsuarioException("Contraseña actual incorrecta");
         }
 
         if (!validador.validarPassword(passwordNueva)) {
             throw new UsuarioException("La nueva contraseña debe tener al menos 6 caracteres");
+        }
+        if (passwordNueva.length() > MAX_PASSWORD) {
+            throw new UsuarioException("La contraseña no puede superar " + MAX_PASSWORD + " caracteres");
         }
 
         usuario.setPassword(encriptarPassword(passwordNueva));
@@ -155,6 +249,11 @@ public class UsuarioService {
         return usuarioDAO.listarPorRol(RolUsuario.TECNICO);
     }
 
+    /**
+     * Elimina un usuario.
+     * [SEC-011] La verificación del último admin se hace aquí; la atomicidad se garantiza
+     *            delegando al DAO que usa SELECT FOR UPDATE dentro de una transacción.
+     */
     public boolean eliminarUsuario(int id) throws UsuarioException {
         Usuario usuario = usuarioDAO.buscar(id);
         if (usuario == null) {
@@ -162,10 +261,8 @@ public class UsuarioService {
         }
 
         if (usuario.getRol() == RolUsuario.ADMIN) {
-            long totalAdmins = usuarioDAO.listarPorRol(RolUsuario.ADMIN).size();
-            if (totalAdmins <= 1) {
-                throw new UsuarioException("No se puede eliminar el único administrador del sistema");
-            }
+            // [SEC-011] La comprobación atómica se hace en el DAO con bloqueo de fila.
+            return usuarioDAO.eliminarAdminSeguro(id);
         }
 
         return usuarioDAO.eliminar(id);
@@ -179,65 +276,47 @@ public class UsuarioService {
                 return true;
             case TECNICO:
                 return accion.equals("VER_INCIDENTES") ||
-                        accion.equals("MODIFICAR_INCIDENTES") ||
-                        accion.equals("COMENTAR");
+                       accion.equals("MODIFICAR_INCIDENTES") ||
+                       accion.equals("COMENTAR");
             case USUARIO:
                 return accion.equals("CREAR_INCIDENTE") ||
-                        accion.equals("VER_MIS_INCIDENTES") ||
-                        accion.equals("COMENTAR_MIS_INCIDENTES");
+                       accion.equals("VER_MIS_INCIDENTES") ||
+                       accion.equals("COMENTAR_MIS_INCIDENTES");
             default:
                 return false;
         }
     }
 
     // -------------------------------------------------------------------------
-    // Métodos privados de manejo de contraseñas
+    // Métodos privados de contraseñas
     // -------------------------------------------------------------------------
 
-    /**
-     * Genera un hash BCrypt de la contraseña.
-     */
     private String encriptarPassword(String password) {
         return BCrypt.hashpw(password, BCrypt.gensalt(BCRYPT_ROUNDS));
     }
 
     /**
-     * Verifica la contraseña soportando dos formatos:
-     *  1. Hash BCrypt (contraseñas nuevas, empiezan con "$2a$" o "$2b$")
-     *  2. Texto plano (contraseñas legacy cargadas directamente en la BD)
-     *
-     * En producción, una vez que todos los usuarios hayan iniciado sesión
-     * al menos una vez, las contraseñas legacy ya no existirán.
+     * Verifica contraseña exclusivamente contra hash BCrypt.
+     * [SEC-009] Soporte de texto plano eliminado completamente.
      */
-    private boolean verificarPassword(String passwordIngresada, String passwordAlmacenada) {
-        if (passwordAlmacenada == null || passwordAlmacenada.isEmpty()) {
+    private boolean verificarPasswordBcrypt(String passwordIngresada, String hashAlmacenado) {
+        if (hashAlmacenado == null || hashAlmacenado.isBlank()) return false;
+        if (!esBCrypt(hashAlmacenado)) {
+            // Hash no reconocido: rechazar y loguear internamente (sin exponer detalles al usuario)
+            System.err.println("[SEGURIDAD] Hash de contraseña en formato no reconocido para un usuario. " +
+                               "Se requiere migración manual.");
             return false;
         }
-
-        if (esBCrypt(passwordAlmacenada)) {
-            // Contraseña ya hasheada con BCrypt
-            try {
-                return BCrypt.checkpw(passwordIngresada, passwordAlmacenada);
-            } catch (Exception e) {
-                return false;
-            }
-        } else {
-            // Contraseña legacy en texto plano (datos de seed/BD)
-            return passwordAlmacenada.equals(passwordIngresada);
+        try {
+            return BCrypt.checkpw(passwordIngresada, hashAlmacenado);
+        } catch (Exception e) {
+            System.err.println("[SEGURIDAD] Error al verificar BCrypt hash: " + e.getMessage());
+            return false;
         }
     }
 
-    /**
-     * Detecta si el valor almacenado es un hash BCrypt válido.
-     */
     private boolean esBCrypt(String valor) {
-        return valor != null && (valor.startsWith("$2a$") || valor.startsWith("$2b$") || valor.startsWith("$2y$"));
-    }
-
-    /**
-     * Detecta si el valor almacenado es texto plano (no BCrypt).
-     */
-    private boolean esTextoPlano(String valor) {
-        return !esBCrypt(valor);
+        return valor != null &&
+               (valor.startsWith("$2a$") || valor.startsWith("$2b$") || valor.startsWith("$2y$"));
     }
 }

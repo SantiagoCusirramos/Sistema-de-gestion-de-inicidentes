@@ -8,11 +8,17 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Correcciones aplicadas:
+ *  [SEC-008] e.printStackTrace() reemplazado por mensajes de log internos.
+ *            ResultSet cerrado con try-with-resources.
+ */
 public class ComentarioDAOImpl implements ComentarioDAO {
 
     @Override
     public int crear(Comentario comentario) {
-        String sql = "INSERT INTO comentarios (incidente_id, usuario_id, mensaje, es_interno, fecha) VALUES (?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO comentarios (incidente_id, usuario_id, mensaje, es_interno, fecha) " +
+                     "VALUES (?, ?, ?, ?, ?)";
 
         try (Connection conn = ConexionBD.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -26,12 +32,11 @@ public class ComentarioDAOImpl implements ComentarioDAO {
             pstmt.executeUpdate();
 
             try (ResultSet rs = pstmt.getGeneratedKeys()) {
-                if (rs.next()) {
-                    return rs.getInt(1);
-                }
+                if (rs.next()) return rs.getInt(1);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            // [SEC-008] Sin stack trace expuesto al exterior
+            System.err.println("[ComentarioDAOImpl] Error al crear comentario: " + e.getMessage());
         }
         return -1;
     }
@@ -45,13 +50,11 @@ public class ComentarioDAOImpl implements ComentarioDAO {
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
             pstmt.setInt(1, incidenteId);
-            ResultSet rs = pstmt.executeQuery();
-
-            while (rs.next()) {
-                comentarios.add(mapResultSetToComentario(rs));
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) comentarios.add(mapResultSetToComentario(rs));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("[ComentarioDAOImpl] Error al listar comentarios: " + e.getMessage());
         }
         return comentarios;
     }
@@ -66,7 +69,7 @@ public class ComentarioDAOImpl implements ComentarioDAO {
             pstmt.setInt(1, id);
             return pstmt.executeUpdate() > 0;
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("[ComentarioDAOImpl] Error al eliminar comentario: " + e.getMessage());
             return false;
         }
     }

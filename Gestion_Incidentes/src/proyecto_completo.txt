@@ -1,0 +1,3464 @@
+FILE: ./Controller/AuthController.java
+----------------------------------------
+package Controller;
+
+import Exceptions.UsuarioException;
+import Model.Usuario;
+import Service.UsuarioService;
+import enums.RolUsuario;
+
+/**
+ * Correcciones aplicadas:
+ *  [SEC-004] El registro público SIEMPRE asigna rol USUARIO.
+ *            Solo un ADMIN autenticado puede crear cuentas con rol elevado.
+ *            El parámetro "rol" fue eliminado del método de registro público.
+ */
+public class AuthController {
+
+    private UsuarioService usuarioService;
+    private Usuario usuarioActual;
+    private String ultimoError;
+
+    public AuthController() {
+        this.usuarioService = new UsuarioService();
+        this.usuarioActual  = null;
+        this.ultimoError    = "";
+    }
+
+    public String getUltimoError() {
+        return ultimoError;
+    }
+
+    /**
+     * Registro público: siempre crea un usuario con rol USUARIO.
+     * [SEC-004] No se acepta parámetro de rol desde el exterior.
+     */
+    public boolean registrar(String nombre, String email, String password) {
+        try {
+            // [SEC-004] Rol fijo: USUARIO. Sin posibilidad de escalar a TECNICO o ADMIN.
+            Usuario nuevoUsuario = usuarioService.registrarUsuario(nombre, email, password);
+            if (nuevoUsuario == null) {
+                ultimoError = "No se pudo crear el usuario. Verifique la conexión a la base de datos.";
+                return false;
+            }
+            return true;
+        } catch (UsuarioException e) {
+            ultimoError = e.getMessage();
+            return false;
+        }
+    }
+
+    /**
+     * Registro con rol específico: solo puede ser invocado por un ADMIN autenticado.
+     * [SEC-004] Si no hay sesión activa de ADMIN, rechaza la operación.
+     *
+     * @param rol  "tecnico" o "admin" (cualquier otro valor asigna USUARIO)
+     */
+    public boolean registrarConRol(String nombre, String email, String password, String rol) {
+        if (usuarioActual == null || usuarioActual.getRol() != RolUsuario.ADMIN) {
+            ultimoError = "Solo un administrador autenticado puede asignar roles elevados.";
+            return false;
+        }
+
+        RolUsuario rolUsuario;
+        switch (rol == null ? "" : rol.toLowerCase().trim()) {
+            case "tecnico":
+                rolUsuario = RolUsuario.TECNICO;
+                break;
+            case "admin":
+                rolUsuario = RolUsuario.ADMIN;
+                break;
+            default:
+                rolUsuario = RolUsuario.USUARIO;
+        }
+
+        try {
+            Usuario nuevoUsuario = usuarioService.registrarUsuarioConRol(
+                nombre, email, password, rolUsuario);
+            if (nuevoUsuario == null) {
+                ultimoError = "No se pudo crear el usuario. Verifique la conexión a la base de datos.";
+                return false;
+            }
+            return true;
+        } catch (UsuarioException e) {
+            ultimoError = e.getMessage();
+            return false;
+        }
+    }
+
+    public boolean login(String email, String password) {
+        try {
+            usuarioActual = usuarioService.login(email, password);
+            ultimoError   = "";
+            return true;
+        } catch (UsuarioException e) {
+            ultimoError = e.getMessage();
+            return false;
+        }
+    }
+
+    public void logout() {
+        usuarioActual = null;
+    }
+
+    public boolean isLoggedIn() {
+        return usuarioActual != null;
+    }
+
+    public Usuario getUsuarioActual() {
+        return usuarioActual;
+    }
+
+    public boolean isAdmin() {
+        return usuarioActual != null && usuarioActual.getRol() == RolUsuario.ADMIN;
+    }
+
+    public boolean isTecnico() {
+        return usuarioActual != null && usuarioActual.getRol() == RolUsuario.TECNICO;
+    }
+
+    public boolean isUsuario() {
+        return usuarioActual != null && usuarioActual.getRol() == RolUsuario.USUARIO;
+    }
+
+    public boolean cambiarPassword(String passwordActual, String passwordNueva) {
+        if (usuarioActual == null) return false;
+        try {
+            return usuarioService.cambiarPassword(
+                usuarioActual.getId(), passwordActual, passwordNueva);
+        } catch (UsuarioException e) {
+            ultimoError = e.getMessage();
+            return false;
+        }
+    }
+
+    public String getInfoUsuarioActual() {
+        if (usuarioActual == null) return "No hay sesión activa";
+        return String.format("Usuario: %s (%s) - Email: %s",
+                usuarioActual.getNombre(),
+                usuarioActual.getRol(),
+                usuarioActual.getEmail());
+    }
+}
+
+
+
+FILE: ./Controller/IncidenteController.java
+----------------------------------------
+package Controller;
+
+import Exceptions.IncidenteException;
+import Exceptions.PermisoDenegadoException;
+import Model.Incidente;
+import Model.Usuario;
+import Service.IncidenteService;
+import enums.EstadoIncidente;
+import enums.Prioridad;
+import enums.RolUsuario;
+
+import java.util.List;
+
+/**
+ * Correcciones aplicadas:
+ *  [SEC-006] cerrarIncidente propaga el rol del usuario al Service para una autorización correcta.
+ *  [SEC-005] listarComentarios propaga usuarioId y rol al Service para control de acceso.
+ *  [SEC-012] Validaciones de longitud máxima antes de llegar al Service.
+ */
+public class IncidenteController {
+
+    // Límites de longitud [SEC-012]
+    private static final int MAX_TITULO      = 200;
+    private static final int MAX_DESCRIPCION = 5000;
+    private static final int MAX_COMENTARIO  = 2000;
+    private static final int MAX_SOLUCION    = 3000;
+
+    private IncidenteService incidenteService;
+    private Usuario usuarioActual;
+
+    public IncidenteController(Usuario usuarioActual) {
+        this.incidenteService = new IncidenteService();
+        this.usuarioActual    = usuarioActual;
+    }
+
+    public void setUsuarioActual(Usuario usuarioActual) {
+        this.usuarioActual = usuarioActual;
+    }
+
+    public Incidente crearIncidente(String titulo, String descripcion, Prioridad prioridad)
+            throws IncidenteException, PermisoDenegadoException {
+
+        if (usuarioActual == null) {
+            throw new PermisoDenegadoException("Debe iniciar sesión para crear un incidente");
+        }
+
+        // [SEC-012] Validaciones de longitud
+        if (titulo == null || titulo.trim().isEmpty()) {
+            throw new IncidenteException("El título es obligatorio");
+        }
+        if (titulo.trim().length() > MAX_TITULO) {
+            throw new IncidenteException(
+                "El título no puede superar " + MAX_TITULO + " caracteres");
+        }
+        if (descripcion == null || descripcion.trim().isEmpty()) {
+            throw new IncidenteException("La descripción es obligatoria");
+        }
+        if (descripcion.trim().length() > MAX_DESCRIPCION) {
+            throw new IncidenteException(
+                "La descripción no puede superar " + MAX_DESCRIPCION + " caracteres");
+        }
+
+        return incidenteService.crearIncidente(
+            titulo.trim(), descripcion.trim(), usuarioActual.getId(), prioridad);
+    }
+
+    public boolean asignarTecnico(int incidenteId, int tecnicoId)
+            throws IncidenteException, PermisoDenegadoException {
+
+        if (usuarioActual == null || usuarioActual.getRol() != RolUsuario.ADMIN) {
+            throw new PermisoDenegadoException("Solo los administradores pueden asignar técnicos");
+        }
+
+        Incidente inc = incidenteService.getIncidentePorId(incidenteId);
+        if (inc == null) {
+            throw new IncidenteException("El incidente con ID " + incidenteId + " no existe");
+        }
+
+        return incidenteService.asignarTecnico(incidenteId, tecnicoId);
+    }
+
+    public boolean resolverIncidente(int incidenteId, String solucion)
+            throws IncidenteException, PermisoDenegadoException {
+
+        if (usuarioActual == null ||
+            (usuarioActual.getRol() != RolUsuario.TECNICO &&
+             usuarioActual.getRol() != RolUsuario.ADMIN)) {
+            throw new PermisoDenegadoException(
+                "Solo técnicos o administradores pueden resolver incidentes");
+        }
+
+        if (solucion == null || solucion.trim().isEmpty()) {
+            throw new IncidenteException("Debe proporcionar una solución");
+        }
+        // [SEC-012]
+        if (solucion.trim().length() > MAX_SOLUCION) {
+            throw new IncidenteException(
+                "La solución no puede superar " + MAX_SOLUCION + " caracteres");
+        }
+
+        return incidenteService.resolverIncidente(
+            incidenteId, solucion.trim(), usuarioActual.getId());
+    }
+
+    /**
+     * [SEC-006] Se propaga el rol al Service para que la lógica de autorización
+     *            sea correcta: ADMIN puede cerrar cualquier incidente.
+     */
+    public boolean cerrarIncidente(int incidenteId)
+            throws IncidenteException, PermisoDenegadoException {
+
+        if (usuarioActual == null) {
+            throw new PermisoDenegadoException("Debe iniciar sesión para cerrar un incidente");
+        }
+        if (usuarioActual.getRol() == RolUsuario.USUARIO) {
+            throw new PermisoDenegadoException(
+                "Los usuarios no pueden cerrar incidentes. Solo técnicos o administradores.");
+        }
+
+        // [SEC-006] El rol se pasa para que el Service lo use en la verificación
+        return incidenteService.cerrarIncidente(
+            incidenteId, usuarioActual.getId(), usuarioActual.getRol());
+    }
+
+    public List<Incidente> listarIncidentes() {
+        if (usuarioActual == null) return List.of();
+        return incidenteService.getIncidentesPorUsuario(
+            usuarioActual.getId(), usuarioActual.getRol());
+    }
+
+    public Incidente buscarIncidente(int id) {
+        return incidenteService.getIncidentePorId(id);
+    }
+
+    public boolean agregarComentario(int incidenteId, String mensaje)
+            throws IncidenteException, PermisoDenegadoException {
+
+        if (usuarioActual == null) {
+            throw new PermisoDenegadoException("Debe iniciar sesión para comentar");
+        }
+        if (mensaje == null || mensaje.trim().isEmpty()) {
+            throw new IncidenteException("El comentario no puede estar vacío");
+        }
+        // [SEC-012]
+        if (mensaje.trim().length() > MAX_COMENTARIO) {
+            throw new IncidenteException(
+                "El comentario no puede superar " + MAX_COMENTARIO + " caracteres");
+        }
+
+        return incidenteService.agregarComentario(
+            incidenteId, usuarioActual.getId(), mensaje.trim());
+    }
+
+    /**
+     * [SEC-005] Se propagan usuarioId y rol al Service para control de acceso.
+     */
+    public List<String> listarComentarios(int incidenteId)
+            throws IncidenteException, PermisoDenegadoException {
+
+        if (usuarioActual == null) {
+            throw new PermisoDenegadoException("Debe iniciar sesión para ver comentarios");
+        }
+
+        return incidenteService.getComentarios(
+            incidenteId, usuarioActual.getId(), usuarioActual.getRol());
+    }
+
+    public boolean cambiarEstado(int incidenteId, EstadoIncidente nuevoEstado)
+            throws IncidenteException, PermisoDenegadoException {
+
+        if (usuarioActual == null) {
+            throw new PermisoDenegadoException("Debe iniciar sesión para cambiar el estado");
+        }
+        if (nuevoEstado == null) {
+            throw new IncidenteException("El estado no es válido");
+        }
+
+        return incidenteService.cambiarEstado(
+            incidenteId, nuevoEstado, usuarioActual.getId());
+    }
+
+    public int getTotalIncidentes() {
+        return listarIncidentes().size();
+    }
+
+    public long getIncidentesPorEstado(EstadoIncidente estado) {
+        return listarIncidentes().stream()
+               .filter(i -> i.getEstado() == estado)
+               .count();
+    }
+}
+
+
+
+FILE: ./DAOs/ComentarioDAO.java
+----------------------------------------
+package DAOs;
+
+import Model.Comentario;
+
+import java.util.List;
+
+public interface ComentarioDAO {
+    int crear(Comentario comentario);
+    List<Comentario> listarPorIncidente(int incidenteId);
+    boolean eliminar(int id);
+}
+
+
+FILE: ./DAOs/Implementacion/ComentarioDAOImpl.java
+----------------------------------------
+package DAOs.Implementacion;
+
+import DAOs.ComentarioDAO;
+import Model.Comentario;
+import Utils.ConexionBD;
+
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Correcciones aplicadas:
+ *  [SEC-008] e.printStackTrace() reemplazado por mensajes de log internos.
+ *            ResultSet cerrado con try-with-resources.
+ */
+public class ComentarioDAOImpl implements ComentarioDAO {
+
+    @Override
+    public int crear(Comentario comentario) {
+        String sql = "INSERT INTO comentarios (incidente_id, usuario_id, mensaje, es_interno, fecha) " +
+                     "VALUES (?, ?, ?, ?, ?)";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+
+            pstmt.setInt(1, comentario.getIncidenteId());
+            pstmt.setInt(2, comentario.getUsuarioId());
+            pstmt.setString(3, comentario.getMensaje());
+            pstmt.setBoolean(4, false);
+            pstmt.setTimestamp(5, Timestamp.valueOf(comentario.getFecha()));
+
+            pstmt.executeUpdate();
+
+            try (ResultSet rs = pstmt.getGeneratedKeys()) {
+                if (rs.next()) return rs.getInt(1);
+            }
+        } catch (SQLException e) {
+            // [SEC-008] Sin stack trace expuesto al exterior
+            System.err.println("[ComentarioDAOImpl] Error al crear comentario: " + e.getMessage());
+        }
+        return -1;
+    }
+
+    @Override
+    public List<Comentario> listarPorIncidente(int incidenteId) {
+        List<Comentario> comentarios = new ArrayList<>();
+        String sql = "SELECT * FROM comentarios WHERE incidente_id = ? ORDER BY fecha ASC";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, incidenteId);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) comentarios.add(mapResultSetToComentario(rs));
+            }
+        } catch (SQLException e) {
+            System.err.println("[ComentarioDAOImpl] Error al listar comentarios: " + e.getMessage());
+        }
+        return comentarios;
+    }
+
+    @Override
+    public boolean eliminar(int id) {
+        String sql = "DELETE FROM comentarios WHERE id = ?";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, id);
+            return pstmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("[ComentarioDAOImpl] Error al eliminar comentario: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private Comentario mapResultSetToComentario(ResultSet rs) throws SQLException {
+        Comentario comentario = new Comentario();
+        comentario.setId(rs.getInt("id"));
+        comentario.setIncidenteId(rs.getInt("incidente_id"));
+        comentario.setUsuarioId(rs.getInt("usuario_id"));
+        comentario.setMensaje(rs.getString("mensaje"));
+        comentario.setFecha(rs.getTimestamp("fecha").toLocalDateTime());
+        return comentario;
+    }
+}
+
+
+
+FILE: ./DAOs/Implementacion/IncidenteDAOImpl.java
+----------------------------------------
+package DAOs.Implementacion;
+
+import DAOs.IncidenteDAO;
+import Model.Incidente;
+import Utils.ConexionBD;
+import enums.EstadoIncidente;
+import enums.Prioridad;
+
+import java.sql.*;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Correcciones aplicadas:
+ *  [SEC-008] e.printStackTrace() reemplazado por mensajes de log internos.
+ *            Los ResultSet se cierran correctamente mediante try-with-resources.
+ */
+public class IncidenteDAOImpl implements IncidenteDAO {
+
+    @Override
+    public int crear(Incidente incidente) {
+        String sql = "INSERT INTO incidentes " +
+                     "(titulo, descripcion, fecha_creacion, usuario_id, tecnico_id, estado, prioridad) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+
+            pstmt.setString(1, incidente.getTitulo());
+            pstmt.setString(2, incidente.getDescripcion());
+            pstmt.setTimestamp(3, Timestamp.valueOf(incidente.getFechaCreacion()));
+            pstmt.setInt(4, incidente.getUsuarioId());
+            if (incidente.getTecnicoId() != null) {
+                pstmt.setInt(5, incidente.getTecnicoId());
+            } else {
+                pstmt.setNull(5, Types.INTEGER);
+            }
+            pstmt.setString(6, incidente.getEstado().name());
+            pstmt.setString(7, incidente.getPrioridad().name());
+
+            pstmt.executeUpdate();
+
+            try (ResultSet rs = pstmt.getGeneratedKeys()) {
+                if (rs.next()) return rs.getInt(1);
+            }
+        } catch (SQLException e) {
+            // [SEC-008] Sin stack trace expuesto al exterior
+            System.err.println("[IncidenteDAOImpl] Error al crear incidente: " + e.getMessage());
+        }
+        return -1;
+    }
+
+    @Override
+    public boolean actualizar(Incidente incidente) {
+        String sql = "UPDATE incidentes " +
+                     "SET titulo = ?, descripcion = ?, fecha_actualizacion = ?, " +
+                     "    tecnico_id = ?, estado = ?, prioridad = ? " +
+                     "WHERE id = ?";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setString(1, incidente.getTitulo());
+            pstmt.setString(2, incidente.getDescripcion());
+            pstmt.setTimestamp(3, Timestamp.valueOf(LocalDateTime.now()));
+            if (incidente.getTecnicoId() != null) {
+                pstmt.setInt(4, incidente.getTecnicoId());
+            } else {
+                pstmt.setNull(4, Types.INTEGER);
+            }
+            pstmt.setString(5, incidente.getEstado().name());
+            pstmt.setString(6, incidente.getPrioridad().name());
+            pstmt.setInt(7, incidente.getId());
+
+            return pstmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("[IncidenteDAOImpl] Error al actualizar incidente: " + e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
+    public Incidente buscar(int id) {
+        String sql = "SELECT * FROM incidentes WHERE id = ?";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, id);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) return mapResultSetToIncidente(rs);
+            }
+        } catch (SQLException e) {
+            System.err.println("[IncidenteDAOImpl] Error al buscar incidente: " + e.getMessage());
+        }
+        return null;
+    }
+
+    @Override
+    public List<Incidente> listarTodos() {
+        List<Incidente> incidentes = new ArrayList<>();
+        String sql = "SELECT * FROM incidentes ORDER BY fecha_creacion DESC";
+
+        try (Connection conn = ConexionBD.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+
+            while (rs.next()) incidentes.add(mapResultSetToIncidente(rs));
+        } catch (SQLException e) {
+            System.err.println("[IncidenteDAOImpl] Error al listar incidentes: " + e.getMessage());
+        }
+        return incidentes;
+    }
+
+    @Override
+    public List<Incidente> listarPorUsuario(int usuarioId) {
+        List<Incidente> incidentes = new ArrayList<>();
+        String sql = "SELECT * FROM incidentes WHERE usuario_id = ? ORDER BY fecha_creacion DESC";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, usuarioId);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) incidentes.add(mapResultSetToIncidente(rs));
+            }
+        } catch (SQLException e) {
+            System.err.println("[IncidenteDAOImpl] Error al listar incidentes por usuario: " + e.getMessage());
+        }
+        return incidentes;
+    }
+
+    @Override
+    public List<Incidente> listarPorTecnico(int tecnicoId) {
+        List<Incidente> incidentes = new ArrayList<>();
+        String sql = "SELECT * FROM incidentes WHERE tecnico_id = ? ORDER BY fecha_creacion DESC";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, tecnicoId);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) incidentes.add(mapResultSetToIncidente(rs));
+            }
+        } catch (SQLException e) {
+            System.err.println("[IncidenteDAOImpl] Error al listar incidentes por técnico: " + e.getMessage());
+        }
+        return incidentes;
+    }
+
+    @Override
+    public List<Incidente> listarPorEstado(EstadoIncidente estado) {
+        List<Incidente> incidentes = new ArrayList<>();
+        String sql = "SELECT * FROM incidentes WHERE estado = ? ORDER BY fecha_creacion DESC";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setString(1, estado.name());
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) incidentes.add(mapResultSetToIncidente(rs));
+            }
+        } catch (SQLException e) {
+            System.err.println("[IncidenteDAOImpl] Error al listar incidentes por estado: " + e.getMessage());
+        }
+        return incidentes;
+    }
+
+    @Override
+    public boolean eliminar(int id) {
+        String sql = "DELETE FROM incidentes WHERE id = ?";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, id);
+            return pstmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("[IncidenteDAOImpl] Error al eliminar incidente: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private Incidente mapResultSetToIncidente(ResultSet rs) throws SQLException {
+        Incidente inc = new Incidente();
+        inc.setId(rs.getInt("id"));
+        inc.setTitulo(rs.getString("titulo"));
+        inc.setDescripcion(rs.getString("descripcion"));
+        inc.setFechaCreacion(rs.getTimestamp("fecha_creacion").toLocalDateTime());
+        inc.setUsuarioId(rs.getInt("usuario_id"));
+
+        int tecnicoId = rs.getInt("tecnico_id");
+        inc.setTecnicoId(rs.wasNull() ? null : tecnicoId);
+
+        inc.setEstado(EstadoIncidente.valueOf(rs.getString("estado")));
+        inc.setPrioridad(Prioridad.valueOf(rs.getString("prioridad")));
+
+        Timestamp fechaAct = rs.getTimestamp("fecha_actualizacion");
+        if (fechaAct != null) inc.setFechaActualizacion(fechaAct.toLocalDateTime());
+
+        return inc;
+    }
+}
+
+
+
+FILE: ./DAOs/Implementacion/UsuarioDAOImpl.java
+----------------------------------------
+package DAOs.Implementacion;
+
+import DAOs.UsuarioDAO;
+import Exceptions.UsuarioException;
+import Model.Usuario;
+import Utils.ConexionBD;
+import enums.RolUsuario;
+
+import java.sql.*;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Correcciones aplicadas:
+ *  [SEC-008] printStackTrace() reemplazado por mensajes de error internos sin exponer stack.
+ *  [SEC-010] Nuevos métodos para gestión de intentos fallidos y bloqueo temporal.
+ *  [SEC-011] eliminarAdminSeguro usa transacción con SELECT FOR UPDATE para evitar TOCTOU.
+ */
+public class UsuarioDAOImpl implements UsuarioDAO {
+
+    @Override
+    public int crear(Usuario usuario) {
+        String sql = "INSERT INTO usuarios (nombre, email, password, rol, fecha_registro) " +
+                     "VALUES (?, ?, ?, ?, ?)";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+
+            pstmt.setString(1, usuario.getNombre());
+            pstmt.setString(2, usuario.getEmail());
+            pstmt.setString(3, usuario.getPassword());
+            pstmt.setString(4, usuario.getRol().name());
+            pstmt.setTimestamp(5, Timestamp.valueOf(usuario.getFechaRegistro()));
+
+            pstmt.executeUpdate();
+
+            try (ResultSet rs = pstmt.getGeneratedKeys()) {
+                if (rs.next()) return rs.getInt(1);
+            }
+        } catch (SQLException e) {
+            // [SEC-008] No se expone stack trace al exterior
+            System.err.println("[UsuarioDAOImpl] Error al crear usuario: " + e.getMessage());
+        }
+        return -1;
+    }
+
+    @Override
+    public Usuario buscar(int id) {
+        String sql = "SELECT * FROM usuarios WHERE id = ?";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, id);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) return mapResultSetToUsuario(rs);
+            }
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al buscar usuario por ID: " + e.getMessage());
+        }
+        return null;
+    }
+
+    @Override
+    public Usuario buscarPorEmail(String email) {
+        String sql = "SELECT * FROM usuarios WHERE email = ?";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setString(1, email);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) return mapResultSetToUsuario(rs);
+            }
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al buscar usuario por email: " + e.getMessage());
+        }
+        return null;
+    }
+
+    @Override
+    public List<Usuario> listarTodos() {
+        List<Usuario> usuarios = new ArrayList<>();
+        String sql = "SELECT * FROM usuarios ORDER BY nombre";
+
+        try (Connection conn = ConexionBD.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+
+            while (rs.next()) usuarios.add(mapResultSetToUsuario(rs));
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al listar usuarios: " + e.getMessage());
+        }
+        return usuarios;
+    }
+
+    @Override
+    public List<Usuario> listarPorRol(RolUsuario rol) {
+        List<Usuario> usuarios = new ArrayList<>();
+        String sql = "SELECT * FROM usuarios WHERE rol = ? ORDER BY nombre";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setString(1, rol.name());
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) usuarios.add(mapResultSetToUsuario(rs));
+            }
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al listar usuarios por rol: " + e.getMessage());
+        }
+        return usuarios;
+    }
+
+    @Override
+    public boolean actualizar(Usuario usuario) {
+        String sql = "UPDATE usuarios SET nombre = ?, email = ?, password = ?, rol = ? WHERE id = ?";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setString(1, usuario.getNombre());
+            pstmt.setString(2, usuario.getEmail());
+            pstmt.setString(3, usuario.getPassword());
+            pstmt.setString(4, usuario.getRol().name());
+            pstmt.setInt(5, usuario.getId());
+
+            return pstmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al actualizar usuario: " + e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
+    public boolean eliminar(int id) {
+        String sql = "DELETE FROM usuarios WHERE id = ?";
+
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, id);
+            return pstmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al eliminar usuario: " + e.getMessage());
+            return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Protección contra fuerza bruta [SEC-010]
+    // -------------------------------------------------------------------------
+
+    @Override
+    public int getIntentosFallidos(int usuarioId) {
+        String sql = "SELECT intentos_fallidos FROM usuarios WHERE id = ?";
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, usuarioId);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) return rs.getInt(1);
+            }
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al obtener intentos fallidos: " + e.getMessage());
+        }
+        return 0;
+    }
+
+    @Override
+    public void setIntentosFallidos(int usuarioId, int intentos) {
+        String sql = "UPDATE usuarios SET intentos_fallidos = ? WHERE id = ?";
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, intentos);
+            pstmt.setInt(2, usuarioId);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al actualizar intentos fallidos: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public LocalDateTime getBloqueadoHasta(int usuarioId) {
+        String sql = "SELECT bloqueado_hasta FROM usuarios WHERE id = ?";
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setInt(1, usuarioId);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) {
+                    Timestamp ts = rs.getTimestamp(1);
+                    return ts != null ? ts.toLocalDateTime() : null;
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al obtener bloqueado_hasta: " + e.getMessage());
+        }
+        return null;
+    }
+
+    @Override
+    public void setBloqueadoHasta(int usuarioId, LocalDateTime hasta) {
+        String sql = "UPDATE usuarios SET bloqueado_hasta = ? WHERE id = ?";
+        try (Connection conn = ConexionBD.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            if (hasta != null) {
+                pstmt.setTimestamp(1, Timestamp.valueOf(hasta));
+            } else {
+                pstmt.setNull(1, Types.TIMESTAMP);
+            }
+            pstmt.setInt(2, usuarioId);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error al actualizar bloqueado_hasta: " + e.getMessage());
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Eliminación atómica del admin [SEC-011]
+    // -------------------------------------------------------------------------
+
+    /**
+     * Elimina un administrador solo si existen al menos dos.
+     * Usa transacción con SELECT FOR UPDATE para evitar race condition (TOCTOU).
+     */
+    @Override
+    public boolean eliminarAdminSeguro(int id) throws UsuarioException {
+        String countSql  = "SELECT COUNT(*) FROM usuarios WHERE rol = 'ADMIN' FOR UPDATE";
+        String deleteSql = "DELETE FROM usuarios WHERE id = ?";
+
+        Connection conn = null;
+        try {
+            conn = ConexionBD.getConnection();
+            conn.setAutoCommit(false);
+
+            // Bloquear y contar admins dentro de la transacción
+            try (Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery(countSql)) {
+
+                if (rs.next() && rs.getInt(1) <= 1) {
+                    conn.rollback();
+                    throw new UsuarioException(
+                        "No se puede eliminar el único administrador del sistema");
+                }
+            }
+
+            // Proceder con la eliminación
+            try (PreparedStatement pstmt = conn.prepareStatement(deleteSql)) {
+                pstmt.setInt(1, id);
+                int rows = pstmt.executeUpdate();
+                conn.commit();
+                return rows > 0;
+            }
+
+        } catch (UsuarioException e) {
+            throw e; // re-lanzar excepción de negocio
+        } catch (SQLException e) {
+            System.err.println("[UsuarioDAOImpl] Error en eliminarAdminSeguro: " + e.getMessage());
+            if (conn != null) {
+                try { conn.rollback(); } catch (SQLException ex) { /* ignorar */ }
+            }
+            return false;
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.setAutoCommit(true);
+                    conn.close(); // devuelve al pool
+                } catch (SQLException ex) { /* ignorar */ }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Mapeo
+    // -------------------------------------------------------------------------
+
+    private Usuario mapResultSetToUsuario(ResultSet rs) throws SQLException {
+        Usuario usuario = new Usuario();
+        usuario.setId(rs.getInt("id"));
+        usuario.setNombre(rs.getString("nombre"));
+        usuario.setEmail(rs.getString("email"));
+        usuario.setPassword(rs.getString("password"));
+        usuario.setRol(RolUsuario.valueOf(rs.getString("rol")));
+        usuario.setFechaRegistro(rs.getTimestamp("fecha_registro").toLocalDateTime());
+        return usuario;
+    }
+}
+
+
+
+FILE: ./DAOs/IncidenteDAO.java
+----------------------------------------
+package DAOs;
+
+import Model.Incidente;
+import enums.EstadoIncidente;
+
+import java.util.List;
+
+public interface IncidenteDAO {
+    int crear(Incidente incidente);
+    boolean actualizar(Incidente incidente);
+    Incidente buscar(int id);
+    List<Incidente> listarTodos();
+    List<Incidente> listarPorUsuario(int usuarioId);
+    List<Incidente> listarPorTecnico(int tecnicoId);
+    List<Incidente> listarPorEstado(EstadoIncidente estado);
+    boolean eliminar(int id);
+}
+
+
+FILE: ./DAOs/UsuarioDAO.java
+----------------------------------------
+package DAOs;
+
+import Model.Usuario;
+import enums.RolUsuario;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * Métodos añadidos:
+ *  [SEC-010] getIntentosFallidos, setIntentosFallidos, getBloqueadoHasta, setBloqueadoHasta
+ *             — persisten el estado de bloqueo por fuerza bruta en la BD.
+ *  [SEC-011] eliminarAdminSeguro — eliminación atómica con SELECT FOR UPDATE para evitar
+ *             race condition al eliminar el último administrador.
+ */
+public interface UsuarioDAO {
+    int crear(Usuario usuario);
+    Usuario buscar(int id);
+    Usuario buscarPorEmail(String email);
+    List<Usuario> listarTodos();
+    List<Usuario> listarPorRol(RolUsuario rol);
+    boolean actualizar(Usuario usuario);
+    boolean eliminar(int id);
+
+    // --- Protección contra fuerza bruta [SEC-010] ---
+    int getIntentosFallidos(int usuarioId);
+    void setIntentosFallidos(int usuarioId, int intentos);
+    LocalDateTime getBloqueadoHasta(int usuarioId);
+    void setBloqueadoHasta(int usuarioId, LocalDateTime hasta);
+
+    // --- Eliminación segura del último admin [SEC-011] ---
+    boolean eliminarAdminSeguro(int id) throws Exceptions.UsuarioException;
+}
+
+
+
+FILE: ./enums/EstadoIncidente.java
+----------------------------------------
+package enums;
+
+public enum EstadoIncidente {
+    PENDIENTE,
+    EN_PROCESO,
+    RESUELTO,
+    CERRADO
+}
+
+
+FILE: ./enums/Prioridad.java
+----------------------------------------
+package enums;
+
+public enum Prioridad {
+    BAJA(1, "Baja prioridad"),
+    MEDIA(2, "Prioridad media"),
+    ALTA(3, "Alta prioridad"),
+    CRITICA(4, "Crítica - acción inmediata");
+
+    private int nivel;
+    private String descripcion;
+
+    Prioridad(int nivel, String descripcion) {
+        this.nivel = nivel;
+        this.descripcion = descripcion;
+    }
+
+    public int getNivel() { return nivel; }
+    public String getDescripcion() { return descripcion; }
+}
+
+
+FILE: ./enums/RolUsuario.java
+----------------------------------------
+package enums;
+
+public enum RolUsuario {
+    ADMIN,
+    TECNICO,
+    USUARIO
+}
+
+
+FILE: ./Exceptions/AutenticacionException.java
+----------------------------------------
+package Exceptions;
+
+public class AutenticacionException extends Exception {
+    public AutenticacionException(String mensaje) {
+        super(mensaje);
+    }
+
+    public AutenticacionException(String mensaje, Throwable causa) {
+        super(mensaje, causa);
+    }
+}
+
+
+
+FILE: ./Exceptions/BaseDeDatosException.java
+----------------------------------------
+package Exceptions;
+
+public class BaseDeDatosException extends Exception {
+    public BaseDeDatosException(String mensaje) {
+        super(mensaje);
+    }
+
+    public BaseDeDatosException(String mensaje, Throwable causa) {
+        super(mensaje, causa);
+    }
+}
+
+
+
+FILE: ./Exceptions/IncidenteException.java
+----------------------------------------
+package Exceptions;
+
+public class IncidenteException extends Exception {
+    public IncidenteException(String mensaje) {
+        super(mensaje);
+    }
+
+    public IncidenteException(String mensaje, Throwable causa) {
+        super(mensaje, causa);
+    }
+}
+
+
+
+FILE: ./Exceptions/PermisoDenegadoException.java
+----------------------------------------
+package Exceptions;
+
+public class PermisoDenegadoException extends Exception {
+    public PermisoDenegadoException(String mensaje) {
+        super(mensaje);
+    }
+
+    public PermisoDenegadoException(String mensaje, Throwable causa) {
+        super(mensaje, causa);
+    }
+}
+
+
+
+FILE: ./Exceptions/UsuarioException.java
+----------------------------------------
+package Exceptions;
+
+public class UsuarioException extends Exception {
+    public UsuarioException(String mensaje) {
+        super(mensaje);
+    }
+
+    public UsuarioException(String mensaje, Throwable causa) {
+        super(mensaje, causa);
+    }
+}
+
+
+
+FILE: ./Exceptions/ValidacionException.java
+----------------------------------------
+package Exceptions;
+
+public class ValidacionException extends Exception {
+    public ValidacionException(String mensaje) {
+        super(mensaje);
+    }
+
+    public ValidacionException(String mensaje, Throwable causa) {
+        super(mensaje, causa);
+    }
+}
+
+
+
+FILE: ./Main.java
+----------------------------------------
+import Utils.ConexionBD;
+import View.LoginView;
+import javafx.application.Application;
+import javafx.stage.Stage;
+
+public class Main extends Application {
+
+    @Override
+    public void start(Stage primaryStage) {
+        ConexionBD.inicializarBaseDatos();
+        LoginView loginView = new LoginView();
+        loginView.mostrar(primaryStage);
+    }
+
+    public static void main(String[] args) {
+        launch(args);
+    }
+}
+
+
+
+
+
+FILE: ./Model/Comentario.java
+----------------------------------------
+package Model;
+
+import java.time.LocalDateTime;
+
+public class Comentario {
+    private int id;
+    private int incidenteId;
+    private int usuarioId;
+    private String mensaje;
+    private LocalDateTime fecha;
+
+    public Comentario() {
+    }
+
+    public Comentario(int id, int incidenteId, int usuarioId, String mensaje, LocalDateTime fecha) {
+        this.id = id;
+        this.incidenteId = incidenteId;
+        this.usuarioId = usuarioId;
+        this.mensaje = mensaje;
+        this.fecha = fecha;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public int getIncidenteId() {
+        return incidenteId;
+    }
+
+    public int getUsuarioId() {
+        return usuarioId;
+    }
+
+    public String getMensaje() {
+        return mensaje;
+    }
+
+    public LocalDateTime getFecha() {
+        return fecha;
+    }
+
+    public void setId(int id) {
+        this.id = id;
+    }
+
+    public void setIncidenteId(int incidenteId) {
+        this.incidenteId = incidenteId;
+    }
+
+    public void setUsuarioId(int usuarioId) {
+        this.usuarioId = usuarioId;
+    }
+
+    public void setMensaje(String mensaje) {
+        this.mensaje = mensaje;
+    }
+
+    public void setFecha(LocalDateTime fecha) {
+        this.fecha = fecha;
+    }
+}
+
+
+FILE: ./Model/HistorialEstado.java
+----------------------------------------
+package Model;
+
+import enums.EstadoIncidente;
+
+import java.time.LocalDateTime;
+
+public class HistorialEstado {
+    private int id;
+    private int incidenteId;
+    private EstadoIncidente estadoAnterior;
+    private EstadoIncidente estadoNuevo;
+    private int usuarioId;
+    private LocalDateTime fechaCambio;
+
+    public HistorialEstado(int id, int incidenteId, EstadoIncidente estadoAnterior, EstadoIncidente estadoNuevo, int usuarioId, LocalDateTime fechaCambio) {
+        this.id = id;
+        this.incidenteId = incidenteId;
+        this.estadoAnterior = estadoAnterior;
+        this.estadoNuevo = estadoNuevo;
+        this.usuarioId = usuarioId;
+        this.fechaCambio = fechaCambio;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public int getIncidenteId() {
+        return incidenteId;
+    }
+
+    public EstadoIncidente getEstadoAnterior() {
+        return estadoAnterior;
+    }
+
+    public EstadoIncidente getEstadoNuevo() {
+        return estadoNuevo;
+    }
+
+    public int getUsuarioId() {
+        return usuarioId;
+    }
+
+    public LocalDateTime getFechaCambio() {
+        return fechaCambio;
+    }
+
+    public void setId(int id) {
+        this.id = id;
+    }
+
+    public void setIncidenteId(int incidenteId) {
+        this.incidenteId = incidenteId;
+    }
+
+    public void setEstadoAnterior(EstadoIncidente estadoAnterior) {
+        this.estadoAnterior = estadoAnterior;
+    }
+
+    public void setEstadoNuevo(EstadoIncidente estadoNuevo) {
+        this.estadoNuevo = estadoNuevo;
+    }
+
+    public void setUsuarioId(int usuarioId) {
+        this.usuarioId = usuarioId;
+    }
+
+    public void setFechaCambio(LocalDateTime fechaCambio) {
+        this.fechaCambio = fechaCambio;
+    }
+}
+
+
+FILE: ./Model/Incidente.java
+----------------------------------------
+package Model;
+
+import enums.EstadoIncidente;
+import enums.Prioridad;
+
+import java.time.LocalDateTime;
+
+public class Incidente {
+    private int id;
+    private String titulo;
+    private String descripcion;
+    private LocalDateTime fechaCreacion;
+    private LocalDateTime fechaActualizacion;
+    private int usuarioId;
+    private Integer tecnicoId;
+    private EstadoIncidente estado;
+    private Prioridad prioridad;
+
+    public Incidente() {
+    }
+
+    public Incidente(int id, String titulo, String descripcion, LocalDateTime fechaCreacion, LocalDateTime fechaActualizacion, int usuarioId, Integer tecnicoId, EstadoIncidente estado, Prioridad prioridad) {
+        this.id = id;
+        this.titulo = titulo;
+        this.descripcion = descripcion;
+        this.fechaCreacion = fechaCreacion;
+        this.fechaActualizacion = fechaActualizacion;
+        this.usuarioId = usuarioId;
+        this.tecnicoId = tecnicoId;
+        this.estado = estado;
+        this.prioridad = prioridad;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public String getTitulo() {
+        return titulo;
+    }
+
+    public String getDescripcion() {
+        return descripcion;
+    }
+
+    public LocalDateTime getFechaCreacion() {
+        return fechaCreacion;
+    }
+
+    public LocalDateTime getFechaActualizacion() {
+        return fechaActualizacion;
+    }
+
+    public int getUsuarioId() {
+        return usuarioId;
+    }
+
+    public Integer getTecnicoId() {
+        return tecnicoId;
+    }
+
+    public EstadoIncidente getEstado() {
+        return estado;
+    }
+
+    public Prioridad getPrioridad() {
+        return prioridad;
+    }
+
+    public void setId(int id) {
+        this.id = id;
+    }
+
+    public void setTitulo(String titulo) {
+        this.titulo = titulo;
+    }
+
+    public void setDescripcion(String descripcion) {
+        this.descripcion = descripcion;
+    }
+
+    public void setFechaCreacion(LocalDateTime fechaCreacion) {
+        this.fechaCreacion = fechaCreacion;
+    }
+
+    public void setFechaActualizacion(LocalDateTime fechaActualizacion) {
+        this.fechaActualizacion = fechaActualizacion;
+    }
+
+    public void setUsuarioId(int usuarioId) {
+        this.usuarioId = usuarioId;
+    }
+
+    public void setTecnicoId(Integer tecnicoId) {
+        this.tecnicoId = tecnicoId;
+    }
+
+    public void setEstado(EstadoIncidente estado) {
+        this.estado = estado;
+    }
+
+    public void setPrioridad(Prioridad prioridad) {
+        this.prioridad = prioridad;
+    }
+
+    @Override
+    public String toString() {
+        return "Incidente{" +
+                "id=" + id +
+                ", titulo='" + titulo + '\'' +
+                ", descripcion='" + descripcion + '\'' +
+                ", fechaCreacion=" + fechaCreacion +
+                ", fechaActualizacion=" + fechaActualizacion +
+                ", usuarioId=" + usuarioId +
+                ", tecnicoId=" + tecnicoId +
+                ", estado=" + estado +
+                ", prioridad=" + prioridad +
+                '}';
+    }
+}
+
+
+FILE: ./Model/Usuario.java
+----------------------------------------
+package Model;
+
+import enums.RolUsuario;
+
+import java.time.LocalDateTime;
+
+public class Usuario {
+    private int id;
+    private String nombre;
+    private String email;
+    private String password;
+    private RolUsuario rol;
+    private LocalDateTime fechaRegistro;
+
+    public Usuario() {
+    }
+
+    public Usuario(int id, String nombre, String email, String password, RolUsuario rol, LocalDateTime fechaRegistro) {
+        this.id = id;
+        this.nombre = nombre;
+        this.email = email;
+        this.password = password;
+        this.rol = rol;
+        this.fechaRegistro = fechaRegistro;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public String getNombre() {
+        return nombre;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public String getPassword() {
+        return password;
+    }
+
+    public RolUsuario getRol() {
+        return rol;
+    }
+
+    public LocalDateTime getFechaRegistro() {
+        return fechaRegistro;
+    }
+
+    public void setId(int id) {
+        this.id = id;
+    }
+
+    public void setNombre(String nombre) {
+        this.nombre = nombre;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
+    }
+
+    public void setPassword(String password) {
+        this.password = password;
+    }
+
+    public void setRol(RolUsuario rol) {
+        this.rol = rol;
+    }
+
+    public void setFechaRegistro(LocalDateTime fechaRegistro) {
+        this.fechaRegistro = fechaRegistro;
+    }
+}
+
+
+FILE: ./Service/IncidenteService.java
+----------------------------------------
+package Service;
+
+import DAOs.ComentarioDAO;
+import DAOs.IncidenteDAO;
+import Exceptions.IncidenteException;
+import Exceptions.PermisoDenegadoException;
+import Model.Comentario;
+import Model.Incidente;
+import Model.Usuario;
+import DAOs.UsuarioDAO;
+import enums.EstadoIncidente;
+import enums.Prioridad;
+import enums.RolUsuario;
+
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * Correcciones aplicadas:
+ *  [SEC-005] IDOR: agregarComentario y getComentarios verifican autorización del usuario.
+ *  [SEC-006] cerrarIncidente recibe el rol del usuario para autorizar correctamente a ADMIN/TECNICO.
+ *  [SEC-007] Comparación de tecnicoId con Objects.equals() para evitar bug de autoboxing con Integer.
+ *  [SEC-012] Validaciones de longitud máxima en entradas de texto.
+ */
+public class IncidenteService {
+
+    // Límites de longitud [SEC-012]
+    static final int MAX_TITULO     = 200;
+    static final int MAX_DESCRIPCION = 5000;
+    static final int MAX_COMENTARIO  = 2000;
+    static final int MAX_SOLUCION    = 3000;
+
+    private IncidenteDAO incidenteDAO;
+    private ComentarioDAO comentarioDAO;
+    private UsuarioDAO usuarioDAO;
+
+    public IncidenteService() {
+        this.incidenteDAO  = new DAOs.Implementacion.IncidenteDAOImpl();
+        this.comentarioDAO = new DAOs.Implementacion.ComentarioDAOImpl();
+        this.usuarioDAO    = new DAOs.Implementacion.UsuarioDAOImpl();
+    }
+
+    public Incidente crearIncidente(String titulo, String descripcion,
+                                    int usuarioId, Prioridad prioridad)
+            throws IncidenteException {
+
+        // [SEC-012] Validación de longitud
+        if (titulo != null && titulo.length() > MAX_TITULO) {
+            throw new IncidenteException(
+                "El título no puede superar " + MAX_TITULO + " caracteres");
+        }
+        if (descripcion != null && descripcion.length() > MAX_DESCRIPCION) {
+            throw new IncidenteException(
+                "La descripción no puede superar " + MAX_DESCRIPCION + " caracteres");
+        }
+
+        Incidente inc = new Incidente();
+        inc.setTitulo(titulo);
+        inc.setDescripcion(descripcion);
+        inc.setUsuarioId(usuarioId);
+        inc.setPrioridad(prioridad);
+        inc.setEstado(EstadoIncidente.PENDIENTE);
+        inc.setFechaCreacion(LocalDateTime.now());
+
+        int id = incidenteDAO.crear(inc);
+        if (id == -1) {
+            throw new IncidenteException("No se pudo guardar el incidente en la base de datos.");
+        }
+        return incidenteDAO.buscar(id);
+    }
+
+    public boolean asignarTecnico(int incidenteId, int tecnicoId) throws IncidenteException {
+        Incidente inc = incidenteDAO.buscar(incidenteId);
+        if (inc == null) {
+            throw new IncidenteException("Incidente no encontrado");
+        }
+
+        inc.setTecnicoId(tecnicoId);
+        inc.setEstado(EstadoIncidente.EN_PROCESO);
+        return incidenteDAO.actualizar(inc);
+    }
+
+    /**
+     * [SEC-007] Usa Objects.equals() para comparar Integer con int sin riesgo de autoboxing.
+     */
+    public boolean resolverIncidente(int incidenteId, String solucion, int tecnicoId)
+            throws IncidenteException, PermisoDenegadoException {
+
+        Incidente inc = incidenteDAO.buscar(incidenteId);
+        if (inc == null) {
+            throw new IncidenteException("Incidente no encontrado");
+        }
+
+        // Objects.equals maneja el caso Integer vs int correctamente [SEC-007]
+        if (!Objects.equals(inc.getTecnicoId(), tecnicoId)) {
+            throw new PermisoDenegadoException(
+                "Solo el técnico asignado puede resolver este incidente");
+        }
+
+        // [SEC-012] Validar longitud de solución
+        if (solucion != null && solucion.length() > MAX_SOLUCION) {
+            throw new IncidenteException(
+                "La solución no puede superar " + MAX_SOLUCION + " caracteres");
+        }
+
+        Comentario comentario = new Comentario();
+        comentario.setIncidenteId(incidenteId);
+        comentario.setUsuarioId(tecnicoId);
+        comentario.setMensaje("SOLUCIÓN: " + solucion);
+        comentario.setFecha(LocalDateTime.now());
+        comentarioDAO.crear(comentario);
+
+        inc.setEstado(EstadoIncidente.RESUELTO);
+        inc.setFechaActualizacion(LocalDateTime.now());
+        return incidenteDAO.actualizar(inc);
+    }
+
+    /**
+     * [SEC-006] Recibe el rol del usuario para autorizar correctamente.
+     *   - ADMIN: puede cerrar cualquier incidente.
+     *   - TECNICO: solo puede cerrar el incidente que tiene asignado.
+     *   El método previo solo comparaba usuarioId == creador, lo que impedía
+     *   a los admins cerrar incidentes ajenos.
+     */
+    public boolean cerrarIncidente(int incidenteId, int usuarioId, RolUsuario rol)
+            throws IncidenteException, PermisoDenegadoException {
+
+        Incidente inc = incidenteDAO.buscar(incidenteId);
+        if (inc == null) {
+            throw new IncidenteException("Incidente no encontrado");
+        }
+
+        boolean esAdmin            = rol == RolUsuario.ADMIN;
+        boolean esTecnicoAsignado  = rol == RolUsuario.TECNICO &&
+                                     Objects.equals(inc.getTecnicoId(), usuarioId);
+
+        if (!esAdmin && !esTecnicoAsignado) {
+            throw new PermisoDenegadoException(
+                "No está autorizado para cerrar este incidente");
+        }
+
+        inc.setEstado(EstadoIncidente.CERRADO);
+        inc.setFechaActualizacion(LocalDateTime.now());
+        return incidenteDAO.actualizar(inc);
+    }
+
+    public List<Incidente> getIncidentesPorUsuario(int usuarioId, RolUsuario rol) {
+        if (rol == RolUsuario.ADMIN) {
+            return incidenteDAO.listarTodos();
+        } else if (rol == RolUsuario.TECNICO) {
+            return incidenteDAO.listarPorTecnico(usuarioId);
+        } else {
+            return incidenteDAO.listarPorUsuario(usuarioId);
+        }
+    }
+
+    public Incidente getIncidentePorId(int id) {
+        return incidenteDAO.buscar(id);
+    }
+
+    /**
+     * [SEC-005] IDOR corregido: verifica que el usuario tenga acceso al incidente.
+     *   - ADMIN y TECNICO asignado: acceso completo.
+     *   - USUARIO: solo puede comentar en sus propios incidentes.
+     */
+    public boolean agregarComentario(int incidenteId, int usuarioId, String mensaje)
+            throws IncidenteException, PermisoDenegadoException {
+
+        Incidente inc = incidenteDAO.buscar(incidenteId);
+        if (inc == null) {
+            throw new IncidenteException("Incidente no encontrado");
+        }
+
+        // [SEC-012] Validar longitud
+        if (mensaje != null && mensaje.length() > MAX_COMENTARIO) {
+            throw new IncidenteException(
+                "El comentario no puede superar " + MAX_COMENTARIO + " caracteres");
+        }
+
+        // [SEC-005] Verificar autorización
+        Usuario usuario = usuarioDAO.buscar(usuarioId);
+        if (usuario == null) {
+            throw new PermisoDenegadoException("Usuario no encontrado");
+        }
+
+        boolean autorizado = usuario.getRol() == RolUsuario.ADMIN
+            || usuario.getRol() == RolUsuario.TECNICO
+            || inc.getUsuarioId() == usuarioId; // USUARIO solo en sus propios incidentes
+
+        if (!autorizado) {
+            throw new PermisoDenegadoException(
+                "No tiene permiso para comentar en este incidente");
+        }
+
+        Comentario comentario = new Comentario();
+        comentario.setIncidenteId(incidenteId);
+        comentario.setUsuarioId(usuarioId);
+        comentario.setMensaje(mensaje);
+        comentario.setFecha(LocalDateTime.now());
+        return comentarioDAO.crear(comentario) > 0;
+    }
+
+    /**
+     * [SEC-005] IDOR corregido: solo devuelve comentarios si el usuario tiene acceso
+     *            al incidente correspondiente.
+     */
+    public List<String> getComentarios(int incidenteId, int usuarioId, RolUsuario rol)
+            throws IncidenteException, PermisoDenegadoException {
+
+        Incidente inc = incidenteDAO.buscar(incidenteId);
+        if (inc == null) {
+            throw new IncidenteException("Incidente no encontrado");
+        }
+
+        // [SEC-005] Verificar que el usuario tiene acceso al incidente
+        boolean autorizado = rol == RolUsuario.ADMIN
+            || rol == RolUsuario.TECNICO
+            || inc.getUsuarioId() == usuarioId;
+
+        if (!autorizado) {
+            throw new PermisoDenegadoException(
+                "No tiene permiso para ver los comentarios de este incidente");
+        }
+
+        List<Comentario> comentarios = comentarioDAO.listarPorIncidente(incidenteId);
+        List<String> resultado = new ArrayList<>();
+        for (Comentario c : comentarios) {
+            resultado.add("[" + c.getFecha() + "] Usuario " +
+                          c.getUsuarioId() + ": " + c.getMensaje());
+        }
+        return resultado;
+    }
+
+    public boolean cambiarEstado(int incidenteId, EstadoIncidente nuevoEstado, int usuarioId)
+            throws IncidenteException {
+
+        Incidente inc = incidenteDAO.buscar(incidenteId);
+        if (inc == null) {
+            throw new IncidenteException("Incidente no encontrado");
+        }
+
+        inc.setEstado(nuevoEstado);
+        inc.setFechaActualizacion(LocalDateTime.now());
+
+        if (nuevoEstado == EstadoIncidente.RESUELTO) {
+            Comentario comentario = new Comentario();
+            comentario.setIncidenteId(incidenteId);
+            comentario.setUsuarioId(usuarioId);
+            comentario.setMensaje("Estado cambiado a: " + nuevoEstado);
+            comentario.setFecha(LocalDateTime.now());
+            comentarioDAO.crear(comentario);
+        }
+        return incidenteDAO.actualizar(inc);
+    }
+}
+
+
+
+FILE: ./Service/ReporteService.java
+----------------------------------------
+package Service;
+
+import DAOs.IncidenteDAO;
+import Model.Incidente;
+import enums.EstadoIncidente;
+import enums.Prioridad;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class ReporteService {
+    private IncidenteDAO incidenteDAO;
+
+    public ReporteService() {
+        this.incidenteDAO = new DAOs.Implementacion.IncidenteDAOImpl();
+    }
+
+    public int getTotalIncidentesPorEstado(EstadoIncidente estado) {
+        return incidenteDAO.listarPorEstado(estado).size();
+    }
+
+    public Map<Prioridad, Integer> getIncidentesPorPrioridad() {
+        Map<Prioridad, Integer> stats = new HashMap<>();
+        for (Prioridad p : Prioridad.values()) {
+            stats.put(p, 0);
+        }
+
+        for (Incidente inc : incidenteDAO.listarTodos()) {
+            stats.put(inc.getPrioridad(), stats.get(inc.getPrioridad()) + 1);
+        }
+        return stats;
+    }
+
+    public List<Incidente> getIncidentesRecientes(int limite) {
+        List<Incidente> todos = incidenteDAO.listarTodos();
+        todos.sort((a, b) -> b.getFechaCreacion().compareTo(a.getFechaCreacion()));
+        return todos.stream().limit(limite).collect(Collectors.toList());
+    }
+}
+
+
+FILE: ./Service/UsuarioService.java
+----------------------------------------
+package Service;
+
+import DAOs.Implementacion.UsuarioDAOImpl;
+import DAOs.UsuarioDAO;
+import Exceptions.UsuarioException;
+import Model.Usuario;
+import Utils.Validador;
+import enums.RolUsuario;
+
+import org.mindrot.jbcrypt.BCrypt;
+
+import java.util.List;
+
+/**
+ * Correcciones aplicadas:
+ *  [SEC-009] Eliminado soporte de contraseñas en texto plano (legacy). Solo BCrypt.
+ *  [SEC-010] Protección contra fuerza bruta: bloqueo temporal tras intentos fallidos.
+ *            Se persiste en BD (columnas intentos_fallidos y bloqueado_hasta en usuarios).
+ */
+public class UsuarioService {
+
+    private UsuarioDAO usuarioDAO;
+    private Validador validador;
+
+    private static final int BCRYPT_ROUNDS    = 12;
+    private static final int MAX_INTENTOS     = 5;
+    private static final long BLOQUEO_SEGUNDOS = 300L; // 5 minutos
+
+    // Límites de longitud [SEC-012]
+    static final int MAX_NOMBRE   = 100;
+    static final int MAX_EMAIL    = 100;
+    static final int MAX_PASSWORD = 128;
+
+    public UsuarioService() {
+        this.usuarioDAO = new UsuarioDAOImpl();
+        this.validador  = new Validador();
+    }
+
+    // -------------------------------------------------------------------------
+    // Registro
+    // -------------------------------------------------------------------------
+
+    /**
+     * Registra un usuario con rol USUARIO (rol fijo para autoregistro público).
+     * [SEC-004] El rol nunca viene del exterior en el registro público.
+     */
+    public Usuario registrarUsuario(String nombre, String email, String password)
+            throws UsuarioException {
+        return registrarUsuarioConRol(nombre, email, password, RolUsuario.USUARIO);
+    }
+
+    /**
+     * Registra un usuario con un rol específico.
+     * Solo debe ser invocado desde código con permisos de ADMIN ya verificados.
+     * [SEC-004] La validación de autorización se hace en AuthController antes de llamar aquí.
+     */
+    public Usuario registrarUsuarioConRol(String nombre, String email,
+                                          String password, RolUsuario rol)
+            throws UsuarioException {
+
+        // Validaciones de entrada [SEC-012]
+        if (nombre == null || nombre.trim().isEmpty()) {
+            throw new UsuarioException("El nombre es obligatorio");
+        }
+        if (nombre.trim().length() > MAX_NOMBRE) {
+            throw new UsuarioException("El nombre no puede superar " + MAX_NOMBRE + " caracteres");
+        }
+        if (!validador.validarEmail(email)) {
+            throw new UsuarioException("Email inválido");
+        }
+        if (email.length() > MAX_EMAIL) {
+            throw new UsuarioException("El email no puede superar " + MAX_EMAIL + " caracteres");
+        }
+        if (!validador.validarPassword(password)) {
+            throw new UsuarioException("La contraseña debe tener al menos 6 caracteres");
+        }
+        if (password.length() > MAX_PASSWORD) {
+            throw new UsuarioException("La contraseña no puede superar " + MAX_PASSWORD + " caracteres");
+        }
+        if (usuarioDAO.buscarPorEmail(email.toLowerCase().trim()) != null) {
+            throw new UsuarioException("El email ya está registrado");
+        }
+
+        Usuario usuario = new Usuario();
+        usuario.setNombre(nombre.trim());
+        usuario.setEmail(email.toLowerCase().trim());
+        usuario.setPassword(encriptarPassword(password));
+        usuario.setRol(rol);
+        usuario.setFechaRegistro(java.time.LocalDateTime.now());
+
+        int id = usuarioDAO.crear(usuario);
+        if (id == -1) {
+            throw new UsuarioException("No se pudo crear el usuario. Verifique la conexión a la base de datos.");
+        }
+        return usuarioDAO.buscar(id);
+    }
+
+    // -------------------------------------------------------------------------
+    // Login con protección contra fuerza bruta [SEC-010]
+    // -------------------------------------------------------------------------
+
+    public Usuario login(String email, String password) throws UsuarioException {
+        if (email == null || email.trim().isEmpty() ||
+            password == null || password.trim().isEmpty()) {
+            throw new UsuarioException("Email y contraseña son obligatorios");
+        }
+
+        String emailNormalizado = email.toLowerCase().trim();
+        Usuario usuario = usuarioDAO.buscarPorEmail(emailNormalizado);
+
+        // Siempre verificar, incluso si el usuario no existe,
+        // para evitar timing attacks basados en la existencia de la cuenta.
+        if (usuario == null) {
+            // Simulamos el tiempo de BCrypt para no revelar existencia del usuario
+            BCrypt.checkpw(password, "$2a$12$invalidhashfortimingnormalization00000000000000000000000");
+            throw new UsuarioException("Credenciales incorrectas");
+        }
+
+        // [SEC-010] Verificar si la cuenta está bloqueada
+        verificarBloqueo(usuario);
+
+        // [SEC-009] Solo BCrypt. No se acepta texto plano.
+        boolean credencialesValidas = verificarPasswordBcrypt(password, usuario.getPassword());
+
+        if (!credencialesValidas) {
+            registrarIntentoFallido(usuario);
+            throw new UsuarioException("Credenciales incorrectas");
+        }
+
+        // Login exitoso: reiniciar contador de intentos
+        resetearIntentosFallidos(usuario);
+        return usuario;
+    }
+
+    // -------------------------------------------------------------------------
+    // Gestión de intentos fallidos [SEC-010]
+    // -------------------------------------------------------------------------
+
+    private void verificarBloqueo(Usuario usuario) throws UsuarioException {
+        java.time.LocalDateTime bloqueadoHasta = usuarioDAO.getBloqueadoHasta(usuario.getId());
+        if (bloqueadoHasta != null &&
+            bloqueadoHasta.isAfter(java.time.LocalDateTime.now())) {
+
+            long segundosRestantes = java.time.Duration.between(
+                java.time.LocalDateTime.now(), bloqueadoHasta).getSeconds();
+            throw new UsuarioException(
+                "Cuenta bloqueada temporalmente por demasiados intentos fallidos. " +
+                "Intente de nuevo en " + Math.max(1, segundosRestantes / 60) + " minuto(s).");
+        }
+    }
+
+    private void registrarIntentoFallido(Usuario usuario) {
+        int intentosActuales = usuarioDAO.getIntentosFallidos(usuario.getId()) + 1;
+        if (intentosActuales >= MAX_INTENTOS) {
+            java.time.LocalDateTime bloqueadoHasta =
+                java.time.LocalDateTime.now().plusSeconds(BLOQUEO_SEGUNDOS);
+            usuarioDAO.setBloqueadoHasta(usuario.getId(), bloqueadoHasta);
+            usuarioDAO.setIntentosFallidos(usuario.getId(), 0);
+        } else {
+            usuarioDAO.setIntentosFallidos(usuario.getId(), intentosActuales);
+        }
+    }
+
+    private void resetearIntentosFallidos(Usuario usuario) {
+        usuarioDAO.setIntentosFallidos(usuario.getId(), 0);
+        usuarioDAO.setBloqueadoHasta(usuario.getId(), null);
+    }
+
+    // -------------------------------------------------------------------------
+    // Gestión de usuarios
+    // -------------------------------------------------------------------------
+
+    public Usuario actualizarUsuario(int id, String nombre, String email, RolUsuario rol)
+            throws UsuarioException {
+
+        Usuario usuario = usuarioDAO.buscar(id);
+        if (usuario == null) {
+            throw new UsuarioException("Usuario no encontrado");
+        }
+
+        String emailNormalizado = (email != null) ? email.toLowerCase().trim() : "";
+
+        if (!usuario.getEmail().equals(emailNormalizado)) {
+            if (!validador.validarEmail(emailNormalizado)) {
+                throw new UsuarioException("Email inválido");
+            }
+            if (emailNormalizado.length() > MAX_EMAIL) {
+                throw new UsuarioException("El email no puede superar " + MAX_EMAIL + " caracteres");
+            }
+            if (usuarioDAO.buscarPorEmail(emailNormalizado) != null) {
+                throw new UsuarioException("El email ya está en uso");
+            }
+            usuario.setEmail(emailNormalizado);
+        }
+
+        if (nombre != null && !nombre.trim().isEmpty()) {
+            if (nombre.trim().length() > MAX_NOMBRE) {
+                throw new UsuarioException("El nombre no puede superar " + MAX_NOMBRE + " caracteres");
+            }
+            usuario.setNombre(nombre.trim());
+        }
+
+        usuario.setRol(rol);
+        usuarioDAO.actualizar(usuario);
+        return usuarioDAO.buscar(id);
+    }
+
+    public boolean cambiarPassword(int id, String passwordActual, String passwordNueva)
+            throws UsuarioException {
+
+        Usuario usuario = usuarioDAO.buscar(id);
+        if (usuario == null) {
+            throw new UsuarioException("Usuario no encontrado");
+        }
+
+        // [SEC-009] Solo BCrypt
+        if (!verificarPasswordBcrypt(passwordActual, usuario.getPassword())) {
+            throw new UsuarioException("Contraseña actual incorrecta");
+        }
+
+        if (!validador.validarPassword(passwordNueva)) {
+            throw new UsuarioException("La nueva contraseña debe tener al menos 6 caracteres");
+        }
+        if (passwordNueva.length() > MAX_PASSWORD) {
+            throw new UsuarioException("La contraseña no puede superar " + MAX_PASSWORD + " caracteres");
+        }
+
+        usuario.setPassword(encriptarPassword(passwordNueva));
+        return usuarioDAO.actualizar(usuario);
+    }
+
+    public Usuario obtenerUsuario(int id) throws UsuarioException {
+        Usuario usuario = usuarioDAO.buscar(id);
+        if (usuario == null) {
+            throw new UsuarioException("Usuario no encontrado");
+        }
+        return usuario;
+    }
+
+    public List<Usuario> listarTodosUsuarios() {
+        return usuarioDAO.listarTodos();
+    }
+
+    public List<Usuario> listarUsuariosPorRol(RolUsuario rol) {
+        return usuarioDAO.listarPorRol(rol);
+    }
+
+    public List<Usuario> listarTecnicos() {
+        return usuarioDAO.listarPorRol(RolUsuario.TECNICO);
+    }
+
+    /**
+     * Elimina un usuario.
+     * [SEC-011] La verificación del último admin se hace aquí; la atomicidad se garantiza
+     *            delegando al DAO que usa SELECT FOR UPDATE dentro de una transacción.
+     */
+    public boolean eliminarUsuario(int id) throws UsuarioException {
+        Usuario usuario = usuarioDAO.buscar(id);
+        if (usuario == null) {
+            throw new UsuarioException("Usuario no encontrado");
+        }
+
+        if (usuario.getRol() == RolUsuario.ADMIN) {
+            // [SEC-011] La comprobación atómica se hace en el DAO con bloqueo de fila.
+            return usuarioDAO.eliminarAdminSeguro(id);
+        }
+
+        return usuarioDAO.eliminar(id);
+    }
+
+    public boolean tienePermiso(Usuario usuario, String accion) {
+        if (usuario == null) return false;
+
+        switch (usuario.getRol()) {
+            case ADMIN:
+                return true;
+            case TECNICO:
+                return accion.equals("VER_INCIDENTES") ||
+                       accion.equals("MODIFICAR_INCIDENTES") ||
+                       accion.equals("COMENTAR");
+            case USUARIO:
+                return accion.equals("CREAR_INCIDENTE") ||
+                       accion.equals("VER_MIS_INCIDENTES") ||
+                       accion.equals("COMENTAR_MIS_INCIDENTES");
+            default:
+                return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Métodos privados de contraseñas
+    // -------------------------------------------------------------------------
+
+    private String encriptarPassword(String password) {
+        return BCrypt.hashpw(password, BCrypt.gensalt(BCRYPT_ROUNDS));
+    }
+
+    /**
+     * Verifica contraseña exclusivamente contra hash BCrypt.
+     * [SEC-009] Soporte de texto plano eliminado completamente.
+     */
+    private boolean verificarPasswordBcrypt(String passwordIngresada, String hashAlmacenado) {
+        if (hashAlmacenado == null || hashAlmacenado.isBlank()) return false;
+        if (!esBCrypt(hashAlmacenado)) {
+            // Hash no reconocido: rechazar y loguear internamente (sin exponer detalles al usuario)
+            System.err.println("[SEGURIDAD] Hash de contraseña en formato no reconocido para un usuario. " +
+                               "Se requiere migración manual.");
+            return false;
+        }
+        try {
+            return BCrypt.checkpw(passwordIngresada, hashAlmacenado);
+        } catch (Exception e) {
+            System.err.println("[SEGURIDAD] Error al verificar BCrypt hash: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean esBCrypt(String valor) {
+        return valor != null &&
+               (valor.startsWith("$2a$") || valor.startsWith("$2b$") || valor.startsWith("$2y$"));
+    }
+}
+
+
+
+FILE: ./Utils/ConexionBD.java
+----------------------------------------
+package Utils;
+
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import org.mindrot.jbcrypt.BCrypt;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+
+public class ConexionBD {
+
+    private static final HikariDataSource dataSource;
+
+    static {
+        String dbUrl  = System.getenv("DB_URL");
+        String dbUser = System.getenv("DB_USER");
+        String dbPass = System.getenv("DB_PASS");
+
+        if (dbUrl == null || dbUrl.isBlank()) {
+            throw new ExceptionInInitializerError(
+                "Variable de entorno DB_URL no configurada. " +
+                "Ejemplo: DB_URL=jdbc:mysql://localhost:3306/sistema_incidentes?serverTimezone=UTC");
+        }
+        if (dbUser == null || dbUser.isBlank()) {
+            throw new ExceptionInInitializerError(
+                "Variable de entorno DB_USER no configurada.");
+        }
+        if (dbPass == null) {
+            throw new ExceptionInInitializerError(
+                "Variable de entorno DB_PASS no configurada.");
+        }
+
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(dbUrl);
+        config.setUsername(dbUser);
+        config.setPassword(dbPass);
+        config.setMaximumPoolSize(10);
+        config.setMinimumIdle(2);
+        config.setConnectionTimeout(30_000);
+        config.setIdleTimeout(600_000);
+        config.setMaxLifetime(1_800_000);
+        config.setConnectionTestQuery("SELECT 1");
+
+        dataSource = new HikariDataSource(config);
+    }
+
+    private ConexionBD() {}
+
+    public static Connection getConnection() throws SQLException {
+        return dataSource.getConnection();
+    }
+
+    public static void cerrarPool() {
+        if (dataSource != null && !dataSource.isClosed()) {
+            dataSource.close();
+            System.out.println("Pool de conexiones cerrado.");
+        }
+    }
+
+    public static void inicializarBaseDatos() {
+        String crearTablaUsuarios = """
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                nombre VARCHAR(100) NOT NULL,
+                email VARCHAR(100) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                rol ENUM('ADMIN', 'TECNICO', 'USUARIO') NOT NULL,
+                telefono VARCHAR(20),
+                activo BOOLEAN DEFAULT TRUE,
+                fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ultimo_login TIMESTAMP NULL,
+                intentos_fallidos INT NOT NULL DEFAULT 0,
+                bloqueado_hasta TIMESTAMP NULL,
+                INDEX idx_email (email),
+                INDEX idx_rol (rol)
+            )
+            """;
+
+        String crearTablaIncidentes = """
+            CREATE TABLE IF NOT EXISTS incidentes (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                titulo VARCHAR(200) NOT NULL,
+                descripcion TEXT NOT NULL,
+                fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                fecha_actualizacion TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
+                fecha_resolucion TIMESTAMP NULL,
+                usuario_id INT NOT NULL,
+                tecnico_id INT NULL,
+                estado ENUM('PENDIENTE', 'EN_PROCESO', 'RESUELTO', 'CERRADO') NOT NULL DEFAULT 'PENDIENTE',
+                prioridad ENUM('BAJA', 'MEDIA', 'ALTA', 'CRITICA') NOT NULL DEFAULT 'MEDIA',
+                tiempo_resolucion_horas INT,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+                FOREIGN KEY (tecnico_id) REFERENCES usuarios(id) ON DELETE SET NULL,
+                INDEX idx_estado (estado),
+                INDEX idx_usuario (usuario_id),
+                INDEX idx_tecnico (tecnico_id),
+                INDEX idx_prioridad (prioridad)
+            )
+            """;
+
+        String crearTablaComentarios = """
+            CREATE TABLE IF NOT EXISTS comentarios (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                incidente_id INT NOT NULL,
+                usuario_id INT NOT NULL,
+                mensaje TEXT NOT NULL,
+                es_interno BOOLEAN DEFAULT FALSE,
+                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (incidente_id) REFERENCES incidentes(id) ON DELETE CASCADE,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+                INDEX idx_incidente (incidente_id)
+            )
+            """;
+
+        String crearTablaHistorial = """
+            CREATE TABLE IF NOT EXISTS historial_estados (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                incidente_id INT NOT NULL,
+                estado_anterior ENUM('PENDIENTE', 'EN_PROCESO', 'RESUELTO', 'CERRADO'),
+                estado_nuevo ENUM('PENDIENTE', 'EN_PROCESO', 'RESUELTO', 'CERRADO') NOT NULL,
+                usuario_id INT NOT NULL,
+                comentario TEXT,
+                fecha_cambio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (incidente_id) REFERENCES incidentes(id) ON DELETE CASCADE,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id),
+                INDEX idx_incidente_fecha (incidente_id, fecha_cambio)
+            )
+            """;
+
+        String crearTablaNotificaciones = """
+            CREATE TABLE IF NOT EXISTS notificaciones (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                usuario_id INT NOT NULL,
+                incidente_id INT,
+                titulo VARCHAR(200) NOT NULL,
+                mensaje TEXT NOT NULL,
+                leido BOOLEAN DEFAULT FALSE,
+                fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                fecha_lectura TIMESTAMP NULL,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+                FOREIGN KEY (incidente_id) REFERENCES incidentes(id) ON DELETE SET NULL,
+                INDEX idx_usuario_leido (usuario_id, leido)
+            )
+            """;
+
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement()) {
+
+            stmt.execute(crearTablaUsuarios);
+            stmt.execute(crearTablaIncidentes);
+            stmt.execute(crearTablaComentarios);
+            stmt.execute(crearTablaHistorial);
+            stmt.execute(crearTablaNotificaciones);
+
+            insertarAdminInicial(conn);
+
+            System.out.println("Base de datos inicializada correctamente.");
+
+        } catch (SQLException e) {
+            System.err.println("Error al inicializar la base de datos: " + e.getMessage());
+            throw new RuntimeException("No se pudo inicializar la base de datos.", e);
+        }
+    }
+
+    private static void insertarAdminInicial(Connection conn) throws SQLException {
+        String adminEmail = "admin@sistema.in";
+
+        String checkSql = "SELECT COUNT(*) FROM usuarios WHERE email = ?";
+        try (PreparedStatement check = conn.prepareStatement(checkSql)) {
+            check.setString(1, adminEmail);
+            try (ResultSet rs = check.executeQuery()) {
+                if (rs.next() && rs.getInt(1) > 0) {
+                    System.out.println("Admin inicial ya existe. Saltando creación.");
+                    return;
+                }
+            }
+        }
+
+        String adminPass = System.getenv("ADMIN_INITIAL_PASSWORD");
+        if (adminPass == null || adminPass.isBlank()) {
+            throw new IllegalStateException(
+                "Variable de entorno ADMIN_INITIAL_PASSWORD no configurada. " +
+                "Ejemplo: export ADMIN_INITIAL_PASSWORD=\"MiContraseña$egura2024\"");
+        }
+
+        String hashBcrypt = BCrypt.hashpw(adminPass, BCrypt.gensalt(12));
+
+        String insertSql = """
+            INSERT INTO usuarios (nombre, email, password, rol, telefono)
+            VALUES (?, ?, ?, 'ADMIN', ?)
+            """;
+        try (PreparedStatement insert = conn.prepareStatement(insertSql)) {
+            insert.setString(1, "Administrador");
+            insert.setString(2, adminEmail);
+            insert.setString(3, hashBcrypt);
+            insert.setString(4, "123456789");
+            insert.executeUpdate();
+            System.out.println("Admin inicial creado correctamente.");
+        }
+    }
+}
+
+
+
+FILE: ./Utils/Validador.java
+----------------------------------------
+package Utils;
+
+import java.util.regex.Pattern;
+
+public class Validador {
+
+    private static final Pattern EMAIL_PATTERN =
+            Pattern.compile("^[A-Za-z0-9+_.-]+@(.+)$");
+
+    public boolean validarEmail(String email) {
+        if (email == null || email.trim().isEmpty()) {
+            return false;
+        }
+        return EMAIL_PATTERN.matcher(email).matches();
+    }
+
+    public boolean validarPassword(String password) {
+        return password != null && password.length() >= 6;
+    }
+
+    public boolean validarNombre(String nombre) {
+        return nombre != null && !nombre.trim().isEmpty() && nombre.length() <= 100;
+    }
+}
+
+
+FILE: ./View/DashboardView.java
+----------------------------------------
+package View;
+
+import Exceptions.UsuarioException;
+import Model.Usuario;
+import Service.UsuarioService;
+import enums.RolUsuario;
+import javafx.beans.property.SimpleStringProperty;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Scene;
+import javafx.scene.control.*;
+import javafx.scene.control.cell.PropertyValueFactory;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.stage.Stage;
+
+public class DashboardView {
+
+    private Usuario usuarioActual;
+    private IncidenteView incidenteView;
+    private ReporteView reporteView;
+
+    public DashboardView(Usuario usuarioActual) {
+        this.usuarioActual = usuarioActual;
+        this.incidenteView = new IncidenteView(usuarioActual);
+        this.reporteView = new ReporteView(usuarioActual);
+    }
+
+    public void mostrar(Stage stage) {
+        BorderPane root = new BorderPane();
+        root.setTop(crearBarraSuperior(stage));
+        root.setCenter(crearTabs());
+
+        Scene scene = new Scene(root, 1000, 700);
+        stage.setTitle("Dashboard - " + usuarioActual.getNombre());
+        stage.setScene(scene);
+        stage.show();
+    }
+
+    private HBox crearBarraSuperior(Stage stage) {
+        VBox infoUsuario = new VBox(2);
+        infoUsuario.setPadding(new Insets(8, 15, 8, 15));
+        infoUsuario.setStyle("-fx-background-color: #1a237e; -fx-background-radius: 6;");
+
+        Label lblNombre = new Label(usuarioActual.getNombre());
+        lblNombre.setFont(Font.font("Arial", FontWeight.BOLD, 13));
+        lblNombre.setStyle("-fx-text-fill: white;");
+
+        Label lblEmail = new Label(usuarioActual.getEmail());
+        lblEmail.setFont(Font.font("Arial", 11));
+        lblEmail.setStyle("-fx-text-fill: #bbdefb;");
+
+        Label lblRol = new Label("Rol: " + usuarioActual.getRol().name());
+        lblRol.setFont(Font.font("Arial", FontWeight.BOLD, 11));
+        lblRol.setStyle("-fx-text-fill: #ffd54f;");
+
+        infoUsuario.getChildren().addAll(lblNombre, lblEmail, lblRol);
+
+        Label lblDashboard = new Label("Panel de Control");
+        lblDashboard.setFont(Font.font("Arial", FontWeight.BOLD, 20));
+        lblDashboard.setStyle("-fx-text-fill: #1a237e;");
+
+        Button btnLogout = new Button("Cerrar Sesion");
+        btnLogout.setStyle("-fx-background-color: #c62828; -fx-text-fill: white; -fx-font-size: 13px; -fx-padding: 8 18; -fx-background-radius: 4;");
+        btnLogout.setOnAction(e -> {
+            LoginView loginView = new LoginView();
+            loginView.mostrar(new Stage());
+            stage.close();
+        });
+
+        HBox barra = new HBox(20);
+        barra.setPadding(new Insets(10, 20, 10, 20));
+        barra.setStyle("-fx-background-color: #e8eaf6; -fx-border-color: #c5cae9; -fx-border-width: 0 0 2 0;");
+        barra.setAlignment(Pos.CENTER);
+        barra.getChildren().addAll(infoUsuario, lblDashboard, btnLogout);
+        HBox.setHgrow(lblDashboard, javafx.scene.layout.Priority.ALWAYS);
+        lblDashboard.setAlignment(Pos.CENTER);
+        return barra;
+    }
+
+    private TabPane crearTabs() {
+        TabPane tabPane = new TabPane();
+        tabPane.setTabMinWidth(150);
+
+        Tab tabIncidentes = new Tab("Incidentes");
+        tabIncidentes.setClosable(false);
+        tabIncidentes.setContent(incidenteView.getContenido());
+
+        tabPane.getTabs().add(tabIncidentes);
+
+        if (usuarioActual.getRol() != RolUsuario.USUARIO) {
+            Tab tabReportes = new Tab("Reportes");
+            tabReportes.setClosable(false);
+            tabReportes.setContent(reporteView.getContenido());
+            tabPane.getTabs().add(tabReportes);
+        }
+
+        if (usuarioActual.getRol() == RolUsuario.ADMIN) {
+            Tab tabUsuarios = new Tab("Usuarios");
+            tabUsuarios.setClosable(false);
+            tabUsuarios.setContent(crearPanelUsuarios());
+            tabPane.getTabs().add(tabUsuarios);
+        }
+
+        return tabPane;
+    }
+
+    private VBox crearPanelUsuarios() {
+        UsuarioService usuarioService = new UsuarioService();
+
+        Label lblTitle = new Label("Administracion de Usuarios");
+        lblTitle.setFont(Font.font("Arial", FontWeight.BOLD, 18));
+
+        TableView<Usuario> tabla = new TableView<>();
+        tabla.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        tabla.setPlaceholder(new Label("No hay usuarios registrados"));
+
+        TableColumn<Usuario, Integer> colId = new TableColumn<>("ID");
+        colId.setCellValueFactory(new PropertyValueFactory<>("id"));
+        colId.setPrefWidth(50);
+
+        TableColumn<Usuario, String> colNombre = new TableColumn<>("Nombre");
+        colNombre.setCellValueFactory(new PropertyValueFactory<>("nombre"));
+
+        TableColumn<Usuario, String> colEmail = new TableColumn<>("Email");
+        colEmail.setCellValueFactory(new PropertyValueFactory<>("email"));
+
+        TableColumn<Usuario, String> colRol = new TableColumn<>("Rol");
+        colRol.setCellValueFactory(cd ->
+                new SimpleStringProperty(cd.getValue().getRol().name()));
+
+        tabla.getColumns().addAll(colId, colNombre, colEmail, colRol);
+
+        ObservableList<Usuario> datos = FXCollections.observableArrayList();
+        tabla.setItems(datos);
+
+        HBox barra = new HBox(8);
+        barra.setPadding(new Insets(5, 0, 10, 0));
+
+        Button btnActualizar = new Button("Actualizar");
+        btnActualizar.setStyle("-fx-background-color: #1565c0; -fx-text-fill: white;");
+        btnActualizar.setOnAction(e -> cargarUsuarios(tabla, datos, usuarioService));
+
+        Button btnTecnico = new Button("Asignar Tecnico");
+        btnTecnico.setStyle("-fx-background-color: #e65100; -fx-text-fill: white;");
+        btnTecnico.setOnAction(e -> cambiarRol(tabla, usuarioService, RolUsuario.TECNICO));
+
+        Button btnRemover = new Button("Remover Tecnico");
+        btnRemover.setStyle("-fx-background-color: #6a1b9a; -fx-text-fill: white;");
+        btnRemover.setOnAction(e -> cambiarRol(tabla, usuarioService, RolUsuario.USUARIO));
+
+        barra.getChildren().addAll(btnActualizar, btnTecnico, btnRemover);
+        cargarUsuarios(tabla, datos, usuarioService);
+
+        VBox panel = new VBox(10, lblTitle, barra, tabla);
+        panel.setPadding(new Insets(20));
+        return panel;
+    }
+
+    private void cargarUsuarios(TableView<Usuario> tabla, ObservableList<Usuario> datos,
+                                 UsuarioService usuarioService) {
+        datos.setAll(usuarioService.listarTodosUsuarios());
+    }
+
+    private void cambiarRol(TableView<Usuario> tabla, UsuarioService usuarioService,
+                             RolUsuario nuevoRol) {
+        Usuario seleccionado = tabla.getSelectionModel().getSelectedItem();
+        if (seleccionado == null) {
+            Alert alert = new Alert(Alert.AlertType.WARNING);
+            alert.setTitle("Seleccion");
+            alert.setHeaderText(null);
+            alert.setContentText("Seleccione un usuario de la tabla.");
+            alert.showAndWait();
+            return;
+        }
+
+        if (seleccionado.getId() == usuarioActual.getId()) {
+            Alert alert = new Alert(Alert.AlertType.WARNING);
+            alert.setTitle("Accion no permitida");
+            alert.setHeaderText(null);
+            alert.setContentText("No puede cambiar su propio rol.");
+            alert.showAndWait();
+            return;
+        }
+
+        String accion = (nuevoRol == RolUsuario.TECNICO) ? "asignar como tecnico" : "remover rol tecnico";
+
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+        confirm.setTitle("Confirmar cambio de rol");
+        confirm.setHeaderText("Usuario: " + seleccionado.getNombre() + " (" + seleccionado.getEmail() + ")");
+        confirm.setContentText("Esta seguro de que desea " + accion + "?");
+        if (confirm.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+
+        try {
+            usuarioService.actualizarUsuario(
+                    seleccionado.getId(),
+                    seleccionado.getNombre(),
+                    seleccionado.getEmail(),
+                    nuevoRol);
+
+            Alert info = new Alert(Alert.AlertType.INFORMATION);
+            info.setTitle("Rol actualizado");
+            info.setHeaderText(null);
+            info.setContentText("El rol de " + seleccionado.getNombre() + " ahora es " + nuevoRol.name() + ".");
+            info.showAndWait();
+
+            cargarUsuarios(tabla, tabla.getItems(), usuarioService);
+        } catch (UsuarioException e) {
+            Alert error = new Alert(Alert.AlertType.ERROR);
+            error.setTitle("Error");
+            error.setHeaderText(null);
+            error.setContentText(e.getMessage());
+            error.showAndWait();
+        }
+    }
+}
+
+
+
+FILE: ./View/IncidenteView.java
+----------------------------------------
+package View;
+
+import Controller.IncidenteController;
+import Exceptions.IncidenteException;
+import Exceptions.PermisoDenegadoException;
+import Model.Incidente;
+import Model.Usuario;
+import Service.UsuarioService;
+import enums.EstadoIncidente;
+import enums.Prioridad;
+import enums.RolUsuario;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.property.SimpleStringProperty;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Node;
+import javafx.scene.control.*;
+import javafx.scene.control.cell.PropertyValueFactory;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+
+/**
+ * Correcciones aplicadas:
+ *  [SEC-005] listarComentarios ahora puede lanzar excepciones checked; se manejan en la UI.
+ *  [SEC-012] Los campos de texto tienen límites visuales y se valida longitud antes de enviar.
+ */
+public class IncidenteView {
+
+    private IncidenteController incidenteController;
+    private UsuarioService usuarioService;
+    private Usuario usuarioActual;
+    private TableView<Incidente> tablaIncidentes;
+    private ObservableList<Incidente> datosIncidentes;
+
+    // Límites de longitud visibles al usuario [SEC-012]
+    private static final int MAX_TITULO      = 200;
+    private static final int MAX_DESCRIPCION = 5000;
+    private static final int MAX_COMENTARIO  = 2000;
+    private static final int MAX_SOLUCION    = 3000;
+
+    public IncidenteView(Usuario usuarioActual) {
+        this.usuarioActual       = usuarioActual;
+        this.incidenteController = new IncidenteController(usuarioActual);
+        this.usuarioService      = new UsuarioService();
+    }
+
+    public Node getContenido() {
+        VBox root = new VBox(10);
+        root.setPadding(new Insets(15));
+
+        Label lblTitulo = new Label("Gestion de Incidentes");
+        lblTitulo.setFont(Font.font("Arial", FontWeight.BOLD, 18));
+
+        root.getChildren().addAll(lblTitulo, crearBarraHerramientas(), crearTabla(), crearBotonera());
+        return root;
+    }
+
+    private HBox crearBarraHerramientas() {
+        HBox barra = new HBox(8);
+        barra.setPadding(new Insets(5, 0, 5, 0));
+
+        Button btnActualizar = new Button("Actualizar");
+        btnActualizar.setStyle("-fx-background-color: #1565c0; -fx-text-fill: white;");
+        btnActualizar.setOnAction(e -> cargarIncidentes());
+
+        Button btnCrear = new Button("Nuevo Incidente");
+        btnCrear.setStyle("-fx-background-color: #2e7d32; -fx-text-fill: white;");
+        btnCrear.setOnAction(e -> mostrarDialogoCrear());
+
+        Button btnVerDetalle = new Button("Ver Detalle");
+        btnVerDetalle.setOnAction(e -> mostrarDetalle());
+
+        barra.getChildren().addAll(btnActualizar, btnCrear, btnVerDetalle);
+
+        if (usuarioActual.getRol() == RolUsuario.ADMIN) {
+            Button btnAsignar = new Button("Asignar Tecnico");
+            btnAsignar.setStyle("-fx-background-color: #e65100; -fx-text-fill: white;");
+            btnAsignar.setOnAction(e -> mostrarDialogoAsignar());
+            barra.getChildren().add(btnAsignar);
+        }
+
+        if (usuarioActual.getRol() == RolUsuario.TECNICO ||
+            usuarioActual.getRol() == RolUsuario.ADMIN) {
+
+            Button btnResolver = new Button("Resolver");
+            btnResolver.setStyle("-fx-background-color: #00695c; -fx-text-fill: white;");
+            btnResolver.setOnAction(e -> mostrarDialogoResolver());
+            barra.getChildren().add(btnResolver);
+
+            Button btnCambiarEstado = new Button("Cambiar Estado");
+            btnCambiarEstado.setOnAction(e -> mostrarDialogoCambiarEstado());
+            barra.getChildren().add(btnCambiarEstado);
+
+            Button btnCerrar = new Button("Cerrar");
+            btnCerrar.setStyle("-fx-background-color: #6a1b9a; -fx-text-fill: white;");
+            btnCerrar.setOnAction(e -> mostrarDialogoCerrar());
+            barra.getChildren().add(btnCerrar);
+        }
+
+        Button btnComentar = new Button("Agregar Comentario");
+        btnComentar.setOnAction(e -> mostrarDialogoComentar());
+        barra.getChildren().add(btnComentar);
+
+        return barra;
+    }
+
+    @SuppressWarnings("unchecked")
+    private TableView<Incidente> crearTabla() {
+        tablaIncidentes = new TableView<>();
+        tablaIncidentes.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        tablaIncidentes.setPlaceholder(new Label("No hay incidentes para mostrar"));
+
+        TableColumn<Incidente, Integer> colId = new TableColumn<>("ID");
+        colId.setCellValueFactory(new PropertyValueFactory<>("id"));
+        colId.setPrefWidth(50);
+
+        TableColumn<Incidente, String> colTitulo = new TableColumn<>("Titulo");
+        colTitulo.setCellValueFactory(new PropertyValueFactory<>("titulo"));
+
+        TableColumn<Incidente, String> colEstado = new TableColumn<>("Estado");
+        colEstado.setCellValueFactory(cd ->
+            new SimpleStringProperty(cd.getValue().getEstado().name()));
+
+        TableColumn<Incidente, String> colPrioridad = new TableColumn<>("Prioridad");
+        colPrioridad.setCellValueFactory(cd ->
+            new SimpleStringProperty(cd.getValue().getPrioridad().name()));
+
+        TableColumn<Incidente, LocalDate> colFecha = new TableColumn<>("Fecha");
+        colFecha.setCellValueFactory(cd ->
+            new SimpleObjectProperty<>(cd.getValue().getFechaCreacion().toLocalDate()));
+
+        TableColumn<Incidente, String> colTecnico = new TableColumn<>("Tecnico");
+        colTecnico.setCellValueFactory(cd -> {
+            Integer tId = cd.getValue().getTecnicoId();
+            return new SimpleStringProperty(tId != null ? String.valueOf(tId) : "Sin asignar");
+        });
+
+        tablaIncidentes.getColumns().addAll(colId, colTitulo, colEstado, colPrioridad, colFecha, colTecnico);
+
+        datosIncidentes = FXCollections.observableArrayList();
+        tablaIncidentes.setItems(datosIncidentes);
+
+        cargarIncidentes();
+        return tablaIncidentes;
+    }
+
+    private HBox crearBotonera() {
+        HBox barra = new HBox(10);
+        barra.setPadding(new Insets(10, 0, 0, 0));
+        barra.setAlignment(Pos.CENTER_RIGHT);
+
+        Button btnTodos = new Button("Ver Todos");
+        btnTodos.setOnAction(e -> cargarIncidentes());
+        barra.getChildren().add(btnTodos);
+        return barra;
+    }
+
+    private void cargarIncidentes() {
+        List<Incidente> incidentes = incidenteController.listarIncidentes();
+        datosIncidentes.setAll(incidentes);
+    }
+
+    private Incidente getIncidenteSeleccionado() {
+        Incidente inc = tablaIncidentes.getSelectionModel().getSelectedItem();
+        if (inc == null) mostrarAlerta("Seleccion", "Seleccione un incidente de la tabla.");
+        return inc;
+    }
+
+    private void mostrarDialogoCrear() {
+        Dialog<Incidente> dialogo = new Dialog<>();
+        dialogo.setTitle("Nuevo Incidente");
+        dialogo.setHeaderText("Crear un nuevo incidente");
+
+        ButtonType btnGuardar = new ButtonType("Guardar", ButtonBar.ButtonData.OK_DONE);
+        dialogo.getDialogPane().getButtonTypes().addAll(btnGuardar, ButtonType.CANCEL);
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.setPadding(new Insets(20));
+
+        TextField txtTitulo = new TextField();
+        txtTitulo.setPromptText("Max. " + MAX_TITULO + " caracteres");
+
+        TextArea txtDescripcion = new TextArea();
+        txtDescripcion.setPromptText("Max. " + MAX_DESCRIPCION + " caracteres");
+        txtDescripcion.setPrefRowCount(4);
+
+        ComboBox<Prioridad> cmbPrioridad = new ComboBox<>(
+            FXCollections.observableArrayList(Prioridad.values()));
+        cmbPrioridad.setValue(Prioridad.MEDIA);
+
+        // [SEC-012] Etiquetas de contador de caracteres
+        Label lblContadorTitulo = new Label("0/" + MAX_TITULO);
+        txtTitulo.textProperty().addListener((obs, oldVal, newVal) -> {
+            int len = newVal.length();
+            lblContadorTitulo.setText(len + "/" + MAX_TITULO);
+            if (len > MAX_TITULO) {
+                txtTitulo.setText(oldVal);
+                lblContadorTitulo.setText(oldVal.length() + "/" + MAX_TITULO);
+            }
+        });
+
+        grid.add(new Label("Titulo:"), 0, 0);
+        grid.add(txtTitulo, 1, 0);
+        grid.add(lblContadorTitulo, 2, 0);
+        grid.add(new Label("Descripcion:"), 0, 1);
+        grid.add(txtDescripcion, 1, 1);
+        grid.add(new Label("Prioridad:"), 0, 2);
+        grid.add(cmbPrioridad, 1, 2);
+
+        dialogo.getDialogPane().setContent(grid);
+
+        dialogo.setResultConverter(dialogButton -> {
+            if (dialogButton == btnGuardar) {
+                Incidente inc = new Incidente();
+                inc.setTitulo(txtTitulo.getText().trim());
+                inc.setDescripcion(txtDescripcion.getText().trim());
+                inc.setPrioridad(cmbPrioridad.getValue());
+                return inc;
+            }
+            return null;
+        });
+
+        Optional<Incidente> resultado = dialogo.showAndWait();
+        resultado.ifPresent(inc -> {
+            try {
+                incidenteController.crearIncidente(
+                    inc.getTitulo(), inc.getDescripcion(), inc.getPrioridad());
+                cargarIncidentes();
+                mostrarInfo("Incidente creado exitosamente.");
+            } catch (IncidenteException | PermisoDenegadoException ex) {
+                mostrarError("Error al crear incidente", ex.getMessage());
+            }
+        });
+    }
+
+    private void mostrarDetalle() {
+        Incidente inc = getIncidenteSeleccionado();
+        if (inc == null) return;
+
+        Dialog<Void> dialogo = new Dialog<>();
+        dialogo.setTitle("Detalle del Incidente #" + inc.getId());
+        dialogo.setHeaderText(inc.getTitulo());
+        dialogo.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+
+        VBox contenido = new VBox(8);
+        contenido.setPadding(new Insets(20));
+
+        contenido.getChildren().addAll(
+            new Label("ID: " + inc.getId()),
+            new Label("Descripcion: " + inc.getDescripcion()),
+            new Label("Estado: " + inc.getEstado().name()),
+            new Label("Prioridad: " + inc.getPrioridad().name() + " - " + inc.getPrioridad().getDescripcion()),
+            new Label("Fecha creacion: " + inc.getFechaCreacion()),
+            new Label("Usuario ID: " + inc.getUsuarioId()),
+            new Label("Tecnico ID: " + (inc.getTecnicoId() != null ? inc.getTecnicoId() : "Sin asignar"))
+        );
+
+        if (inc.getFechaActualizacion() != null) {
+            contenido.getChildren().add(
+                new Label("Ultima actualizacion: " + inc.getFechaActualizacion()));
+        }
+
+        Label lblComentarios = new Label("\nComentarios:");
+        lblComentarios.setFont(Font.font("Arial", FontWeight.BOLD, 14));
+        contenido.getChildren().add(lblComentarios);
+
+        // [SEC-005] listarComentarios ahora puede lanzar excepciones: se manejan aquí.
+        try {
+            List<String> comentarios = incidenteController.listarComentarios(inc.getId());
+            if (comentarios.isEmpty()) {
+                contenido.getChildren().add(new Label("  (Sin comentarios)"));
+            } else {
+                for (String c : comentarios) {
+                    Label lblC = new Label("  " + c);
+                    lblC.setWrapText(true);
+                    contenido.getChildren().add(lblC);
+                }
+            }
+        } catch (IncidenteException | PermisoDenegadoException ex) {
+            contenido.getChildren().add(new Label("  No tiene permiso para ver los comentarios."));
+        }
+
+        ScrollPane scroll = new ScrollPane(contenido);
+        scroll.setFitToWidth(true);
+        scroll.setPrefHeight(400);
+        dialogo.getDialogPane().setContent(scroll);
+        dialogo.showAndWait();
+    }
+
+    private void mostrarDialogoComentar() {
+        Incidente inc = getIncidenteSeleccionado();
+        if (inc == null) return;
+
+        TextInputDialog dialogo = new TextInputDialog();
+        dialogo.setTitle("Agregar Comentario");
+        dialogo.setHeaderText("Comentario para Incidente #" + inc.getId() +
+                              " (max. " + MAX_COMENTARIO + " caracteres)");
+        dialogo.setContentText("Mensaje:");
+
+        Optional<String> resultado = dialogo.showAndWait();
+        resultado.ifPresent(mensaje -> {
+            // [SEC-012] Validación de longitud en la UI antes de enviar
+            if (mensaje.trim().length() > MAX_COMENTARIO) {
+                mostrarError("Error", "El comentario no puede superar " + MAX_COMENTARIO + " caracteres.");
+                return;
+            }
+            try {
+                incidenteController.agregarComentario(inc.getId(), mensaje);
+                mostrarInfo("Comentario agregado.");
+            } catch (IncidenteException | PermisoDenegadoException ex) {
+                mostrarError("Error", ex.getMessage());
+            }
+        });
+    }
+
+    private void mostrarDialogoAsignar() {
+        Incidente inc = getIncidenteSeleccionado();
+        if (inc == null) return;
+
+        List<Usuario> tecnicos = usuarioService.listarTecnicos();
+        if (tecnicos.isEmpty()) {
+            mostrarAlerta("Sin tecnicos", "No hay tecnicos disponibles para asignar.");
+            return;
+        }
+
+        ChoiceDialog<Usuario> dialogo = new ChoiceDialog<>(tecnicos.get(0), tecnicos);
+        dialogo.setTitle("Asignar Tecnico");
+        dialogo.setHeaderText("Asignar tecnico al Incidente #" + inc.getId());
+        dialogo.setContentText("Seleccione tecnico:");
+
+        Optional<Usuario> resultado = dialogo.showAndWait();
+        resultado.ifPresent(tecnico -> {
+            try {
+                incidenteController.asignarTecnico(inc.getId(), tecnico.getId());
+                cargarIncidentes();
+                mostrarInfo("Tecnico " + tecnico.getNombre() + " asignado.");
+            } catch (IncidenteException | PermisoDenegadoException ex) {
+                mostrarError("Error", ex.getMessage());
+            }
+        });
+    }
+
+    private void mostrarDialogoResolver() {
+        Incidente inc = getIncidenteSeleccionado();
+        if (inc == null) return;
+
+        TextInputDialog dialogo = new TextInputDialog();
+        dialogo.setTitle("Resolver Incidente");
+        dialogo.setHeaderText("Resolver Incidente #" + inc.getId() +
+                              " (max. " + MAX_SOLUCION + " caracteres)");
+        dialogo.setContentText("Describa la solucion:");
+
+        Optional<String> resultado = dialogo.showAndWait();
+        resultado.ifPresent(solucion -> {
+            if (solucion.trim().length() > MAX_SOLUCION) {
+                mostrarError("Error", "La solución no puede superar " + MAX_SOLUCION + " caracteres.");
+                return;
+            }
+            try {
+                incidenteController.resolverIncidente(inc.getId(), solucion);
+                cargarIncidentes();
+                mostrarInfo("Incidente resuelto.");
+            } catch (IncidenteException | PermisoDenegadoException ex) {
+                mostrarError("Error", ex.getMessage());
+            }
+        });
+    }
+
+    private void mostrarDialogoCerrar() {
+        Incidente inc = getIncidenteSeleccionado();
+        if (inc == null) return;
+
+        Alert dialogo = new Alert(Alert.AlertType.CONFIRMATION);
+        dialogo.setTitle("Cerrar Incidente");
+        dialogo.setHeaderText("Confirmar cierre del Incidente #" + inc.getId());
+        dialogo.setContentText("Esta seguro de que desea cerrar este incidente?");
+
+        Optional<ButtonType> resultado = dialogo.showAndWait();
+        if (resultado.isPresent() && resultado.get() == ButtonType.OK) {
+            try {
+                incidenteController.cerrarIncidente(inc.getId());
+                cargarIncidentes();
+                mostrarInfo("Incidente cerrado.");
+            } catch (IncidenteException | PermisoDenegadoException ex) {
+                mostrarError("Error", ex.getMessage());
+            }
+        }
+    }
+
+    private void mostrarDialogoCambiarEstado() {
+        Incidente inc = getIncidenteSeleccionado();
+        if (inc == null) return;
+
+        ChoiceDialog<EstadoIncidente> dialogo = new ChoiceDialog<>(
+            inc.getEstado(),
+            FXCollections.observableArrayList(EstadoIncidente.values()));
+        dialogo.setTitle("Cambiar Estado");
+        dialogo.setHeaderText("Cambiar estado del Incidente #" + inc.getId());
+        dialogo.setContentText("Nuevo estado:");
+
+        Optional<EstadoIncidente> resultado = dialogo.showAndWait();
+        resultado.ifPresent(estado -> {
+            try {
+                incidenteController.cambiarEstado(inc.getId(), estado);
+                cargarIncidentes();
+                mostrarInfo("Estado cambiado a: " + estado.name());
+            } catch (IncidenteException | PermisoDenegadoException ex) {
+                mostrarError("Error", ex.getMessage());
+            }
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers de alertas
+    // -------------------------------------------------------------------------
+
+    private void mostrarAlerta(String titulo, String mensaje) {
+        Alert alert = new Alert(Alert.AlertType.WARNING);
+        alert.setTitle(titulo);
+        alert.setHeaderText(null);
+        alert.setContentText(mensaje);
+        alert.showAndWait();
+    }
+
+    private void mostrarInfo(String mensaje) {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.setTitle("Informacion");
+        alert.setHeaderText(null);
+        alert.setContentText(mensaje);
+        alert.showAndWait();
+    }
+
+    private void mostrarError(String titulo, String mensaje) {
+        Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.setTitle(titulo);
+        alert.setHeaderText(null);
+        alert.setContentText(mensaje);
+        alert.showAndWait();
+    }
+}
+
+
+
+FILE: ./View/LoginView.java
+----------------------------------------
+package View;
+
+import Controller.AuthController;
+import Model.Usuario;
+import Utils.Validador;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Scene;
+import javafx.scene.control.*;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.VBox;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.stage.Stage;
+
+/**
+ * Correcciones aplicadas:
+ *  [SEC-004] El registro llama a authController.registrar() sin parámetro de rol.
+ *            El rol USUARIO es asignado internamente y no puede ser manipulado desde la UI.
+ */
+public class LoginView {
+
+    private AuthController authController;
+    private Validador validador;
+
+    public LoginView() {
+        this.authController = new AuthController();
+        this.validador = new Validador();
+    }
+
+    public void mostrar(Stage stage) {
+        TabPane tabPane = new TabPane();
+
+        Tab loginTab = new Tab("Iniciar Sesion");
+        loginTab.setClosable(false);
+        loginTab.setContent(crearLoginPanel(stage));
+
+        Tab registerTab = new Tab("Registrarse");
+        registerTab.setClosable(false);
+        registerTab.setContent(crearRegisterPanel());
+
+        tabPane.getTabs().addAll(loginTab, registerTab);
+
+        VBox root = new VBox(10, crearEncabezado("Sistema de Gestion de Incidentes"), tabPane);
+        root.setPadding(new Insets(20));
+        root.setAlignment(Pos.TOP_CENTER);
+
+        Scene scene = new Scene(root, 480, 420);
+        stage.setTitle("Sistema de Gestion de Incidentes");
+        stage.setScene(scene);
+        stage.setResizable(false);
+        stage.show();
+    }
+
+    private Label crearEncabezado(String texto) {
+        Label label = new Label(texto);
+        label.setFont(Font.font("Arial", FontWeight.BOLD, 20));
+        label.setStyle("-fx-text-fill: #1a237e;");
+        return label;
+    }
+
+    private VBox crearLoginPanel(Stage stage) {
+        Label lblEmail = new Label("Email:");
+        TextField txtEmail = new TextField();
+        txtEmail.setPromptText("correo@ejemplo.com");
+
+        Label lblPassword = new Label("Contrasena:");
+        PasswordField txtPassword = new PasswordField();
+        txtPassword.setPromptText("Ingrese su contrasena");
+
+        Label lblMensaje = new Label();
+        lblMensaje.setStyle("-fx-text-fill: red;");
+
+        Button btnLogin = new Button("Iniciar Sesion");
+        btnLogin.setDefaultButton(true);
+        btnLogin.setStyle("-fx-background-color: #1a237e; -fx-text-fill: white; " +
+                          "-fx-font-size: 14px; -fx-padding: 10 30;");
+        btnLogin.setOnAction(e -> {
+            String email    = txtEmail.getText().trim();
+            String password = txtPassword.getText();
+
+            if (!validador.validarEmail(email)) {
+                lblMensaje.setText("Formato de email invalido");
+                return;
+            }
+            if (!validador.validarPassword(password)) {
+                lblMensaje.setText("La contrasena debe tener al menos 6 caracteres");
+                return;
+            }
+
+            if (authController.login(email, password)) {
+                Usuario usuario = authController.getUsuarioActual();
+                DashboardView dashboard = new DashboardView(usuario);
+                dashboard.mostrar(new Stage());
+                stage.close();
+            } else {
+                lblMensaje.setText(authController.getUltimoError());
+            }
+        });
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(12);
+        grid.setAlignment(Pos.CENTER);
+        grid.add(lblEmail, 0, 0);
+        grid.add(txtEmail, 1, 0);
+        grid.add(lblPassword, 0, 1);
+        grid.add(txtPassword, 1, 1);
+        grid.add(btnLogin, 1, 2);
+        GridPane.setMargin(btnLogin, new Insets(10, 0, 0, 0));
+
+        VBox panel = new VBox(15, grid, lblMensaje);
+        panel.setAlignment(Pos.CENTER);
+        panel.setPadding(new Insets(40, 20, 20, 20));
+        return panel;
+    }
+
+    private VBox crearRegisterPanel() {
+        Label lblNombre = new Label("Nombre:");
+        TextField txtNombre = new TextField();
+        txtNombre.setPromptText("Nombre completo");
+
+        Label lblEmail = new Label("Email:");
+        TextField txtEmail = new TextField();
+        txtEmail.setPromptText("correo@ejemplo.com");
+
+        Label lblPassword = new Label("Contrasena:");
+        PasswordField txtPassword = new PasswordField();
+        txtPassword.setPromptText("Min. 6 caracteres");
+
+        Label lblConfirmar = new Label("Confirmar:");
+        PasswordField txtConfirmar = new PasswordField();
+        txtConfirmar.setPromptText("Repita la contrasena");
+
+        Label lblMensaje = new Label();
+        lblMensaje.setStyle("-fx-text-fill: red;");
+
+        Button btnRegister = new Button("Registrarse");
+        btnRegister.setStyle("-fx-background-color: #2e7d32; -fx-text-fill: white; " +
+                             "-fx-font-size: 14px; -fx-padding: 10 30;");
+        btnRegister.setOnAction(e -> {
+            String nombre    = txtNombre.getText().trim();
+            String email     = txtEmail.getText().trim();
+            String password  = txtPassword.getText();
+            String confirmar = txtConfirmar.getText();
+
+            if (!validador.validarNombre(nombre)) {
+                lblMensaje.setText("Nombre invalido");
+                return;
+            }
+            if (!validador.validarEmail(email)) {
+                lblMensaje.setText("Formato de email invalido");
+                return;
+            }
+            if (!validador.validarPassword(password)) {
+                lblMensaje.setText("La contrasena debe tener al menos 6 caracteres");
+                return;
+            }
+            if (!password.equals(confirmar)) {
+                lblMensaje.setText("Las contrasenas no coinciden");
+                return;
+            }
+
+            // [SEC-004] Sin parámetro de rol: el registro público siempre crea rol USUARIO.
+            if (authController.registrar(nombre, email, password)) {
+                lblMensaje.setStyle("-fx-text-fill: green;");
+                lblMensaje.setText("Registro exitoso. Ahora puede iniciar sesion.");
+                txtNombre.clear();
+                txtEmail.clear();
+                txtPassword.clear();
+                txtConfirmar.clear();
+            } else {
+                lblMensaje.setStyle("-fx-text-fill: red;");
+                lblMensaje.setText(authController.getUltimoError());
+            }
+        });
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.setAlignment(Pos.CENTER);
+        grid.add(lblNombre, 0, 0);
+        grid.add(txtNombre, 1, 0);
+        grid.add(lblEmail, 0, 1);
+        grid.add(txtEmail, 1, 1);
+        grid.add(lblPassword, 0, 2);
+        grid.add(txtPassword, 1, 2);
+        grid.add(lblConfirmar, 0, 3);
+        grid.add(txtConfirmar, 1, 3);
+        grid.add(btnRegister, 1, 4);
+        GridPane.setMargin(btnRegister, new Insets(10, 0, 0, 0));
+
+        VBox panel = new VBox(15, grid, lblMensaje);
+        panel.setAlignment(Pos.CENTER);
+        panel.setPadding(new Insets(20));
+        return panel;
+    }
+}
+
+
+
+FILE: ./View/ReporteView.java
+----------------------------------------
+package View;
+
+import Controller.IncidenteController;
+import Model.Incidente;
+import Model.Usuario;
+import Service.ReporteService;
+import enums.EstadoIncidente;
+import enums.Prioridad;
+import enums.RolUsuario;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.property.SimpleStringProperty;
+import javafx.collections.FXCollections;
+import javafx.geometry.Insets;
+import javafx.geometry.Side;
+import javafx.scene.Node;
+import javafx.scene.chart.BarChart;
+import javafx.scene.chart.CategoryAxis;
+import javafx.scene.chart.NumberAxis;
+import javafx.scene.chart.PieChart;
+import javafx.scene.chart.XYChart;
+import javafx.scene.control.Label;
+import javafx.scene.control.TableColumn;
+import javafx.scene.control.TableView;
+import javafx.scene.control.cell.PropertyValueFactory;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class ReporteView {
+
+    private ReporteService reporteService;
+    private IncidenteController incidenteController;
+    private Usuario usuarioActual;
+
+    public ReporteView(Usuario usuarioActual) {
+        this.reporteService = new ReporteService();
+        this.incidenteController = new IncidenteController(usuarioActual);
+        this.usuarioActual = usuarioActual;
+    }
+
+    public Node getContenido() {
+        VBox root = new VBox(15);
+        root.setPadding(new Insets(20));
+
+        Label lblTitulo = new Label("Reportes y Estadisticas");
+        lblTitulo.setFont(Font.font("Arial", FontWeight.BOLD, 18));
+
+        root.getChildren().addAll(
+                lblTitulo,
+                crearResumenGeneral(),
+                crearGraficos(),
+                crearTablaRecientes()
+        );
+        return root;
+    }
+
+    private HBox crearResumenGeneral() {
+        int total = incidenteController.getTotalIncidentes();
+
+        long pendientes = incidenteController.getIncidentesPorEstado(EstadoIncidente.PENDIENTE);
+        long enProceso = incidenteController.getIncidentesPorEstado(EstadoIncidente.EN_PROCESO);
+        long resueltos = incidenteController.getIncidentesPorEstado(EstadoIncidente.RESUELTO);
+        long cerrados = incidenteController.getIncidentesPorEstado(EstadoIncidente.CERRADO);
+
+        VBox cardTotal = crearCard("Total", String.valueOf(total), "#1a237e");
+        VBox cardPendientes = crearCard("Pendientes", String.valueOf(pendientes), "#e65100");
+        VBox cardProceso = crearCard("En Proceso", String.valueOf(enProceso), "#1565c0");
+        VBox cardResueltos = crearCard("Resueltos", String.valueOf(resueltos), "#2e7d32");
+        VBox cardCerrados = crearCard("Cerrados", String.valueOf(cerrados), "#6a1b9a");
+
+        HBox cards = new HBox(12, cardTotal, cardPendientes, cardProceso, cardResueltos, cardCerrados);
+        cards.setPadding(new Insets(10, 0, 10, 0));
+        return cards;
+    }
+
+    private VBox crearCard(String titulo, String valor, String color) {
+        Label lblTitulo = new Label(titulo);
+        lblTitulo.setFont(Font.font("Arial", FontWeight.NORMAL, 12));
+        lblTitulo.setStyle("-fx-text-fill: white;");
+
+        Label lblValor = new Label(valor);
+        lblValor.setFont(Font.font("Arial", FontWeight.BOLD, 28));
+        lblValor.setStyle("-fx-text-fill: white;");
+
+        VBox card = new VBox(5, lblTitulo, lblValor);
+        card.setPadding(new Insets(15, 20, 15, 20));
+        card.setStyle("-fx-background-color: " + color + "; -fx-background-radius: 8;");
+        card.setPrefWidth(160);
+        return card;
+    }
+
+    private HBox crearGraficos() {
+        PieChart pieChart = new PieChart();
+        pieChart.setTitle("Incidentes por Prioridad");
+        pieChart.setLegendSide(Side.BOTTOM);
+        pieChart.setPrefWidth(350);
+        pieChart.setPrefHeight(300);
+
+        Map<Prioridad, Integer> stats = reporteService.getIncidentesPorPrioridad();
+        for (Map.Entry<Prioridad, Integer> entry : stats.entrySet()) {
+            if (entry.getValue() > 0) {
+                pieChart.getData().add(new PieChart.Data(
+                        entry.getKey().name() + " (" + entry.getValue() + ")",
+                        entry.getValue()));
+            }
+        }
+
+        if (pieChart.getData().isEmpty()) {
+            pieChart.getData().add(new PieChart.Data("Sin datos", 1));
+        }
+
+        CategoryAxis ejeX = new CategoryAxis();
+        ejeX.setLabel("Estado");
+
+        NumberAxis ejeY = new NumberAxis();
+        ejeY.setLabel("Cantidad");
+
+        BarChart<String, Number> barChart = new BarChart<>(ejeX, ejeY);
+        barChart.setTitle("Incidentes por Estado");
+        barChart.setPrefWidth(400);
+        barChart.setPrefHeight(300);
+        barChart.setLegendVisible(false);
+
+        XYChart.Series<String, Number> serie = new XYChart.Series<>();
+        List<Incidente> todos = incidenteController.listarIncidentes();
+
+        for (EstadoIncidente estado : EstadoIncidente.values()) {
+            long count = todos.stream().filter(i -> i.getEstado() == estado).count();
+            serie.getData().add(new XYChart.Data<>(estado.name(), count));
+        }
+        barChart.getData().add(serie);
+
+        HBox graficos = new HBox(20, pieChart, barChart);
+        graficos.setPadding(new Insets(10, 0, 10, 0));
+        return graficos;
+    }
+
+    @SuppressWarnings("unchecked")
+    private VBox crearTablaRecientes() {
+        Label lblTitulo = new Label("Incidentes Recientes");
+        lblTitulo.setFont(Font.font("Arial", FontWeight.BOLD, 14));
+
+        TableView<Incidente> tabla = new TableView<>();
+        tabla.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        tabla.setPrefHeight(200);
+        tabla.setPlaceholder(new Label("No hay incidentes recientes"));
+
+        TableColumn<Incidente, Integer> colId = new TableColumn<>("ID");
+        colId.setCellValueFactory(new PropertyValueFactory<>("id"));
+        colId.setPrefWidth(50);
+
+        TableColumn<Incidente, String> colTitulo = new TableColumn<>("Titulo");
+        colTitulo.setCellValueFactory(new PropertyValueFactory<>("titulo"));
+
+        TableColumn<Incidente, String> colEstado = new TableColumn<>("Estado");
+        colEstado.setCellValueFactory(cd ->
+                new SimpleStringProperty(cd.getValue().getEstado().name()));
+
+        TableColumn<Incidente, String> colPrioridad = new TableColumn<>("Prioridad");
+        colPrioridad.setCellValueFactory(cd ->
+                new SimpleStringProperty(cd.getValue().getPrioridad().name()));
+
+        TableColumn<Incidente, LocalDate> colFecha = new TableColumn<>("Fecha");
+        colFecha.setCellValueFactory(cd ->
+                new SimpleObjectProperty<>(cd.getValue().getFechaCreacion().toLocalDate()));
+
+        tabla.getColumns().addAll(colId, colTitulo, colEstado, colPrioridad, colFecha);
+
+        List<Incidente> recientes = reporteService.getIncidentesRecientes(15);
+        tabla.setItems(FXCollections.observableArrayList(recientes));
+
+        VBox panel = new VBox(8, lblTitulo, tabla);
+        panel.setPadding(new Insets(10, 0, 0, 0));
+        return panel;
+    }
+}
+
+
+

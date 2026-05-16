@@ -1,22 +1,23 @@
 package View;
 
 import Controller.AuthController;
-import Exceptions.UsuarioException;
 import Model.Usuario;
-import Service.UsuarioService;
 import Utils.Validador;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
-import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
-import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.stage.Stage;
 
+/**
+ * Correcciones aplicadas:
+ *  [SEC-004] El registro llama a authController.registrar() sin parámetro de rol.
+ *            El rol USUARIO es asignado internamente y no puede ser manipulado desde la UI.
+ */
 public class LoginView {
 
     private AuthController authController;
@@ -72,9 +73,10 @@ public class LoginView {
 
         Button btnLogin = new Button("Iniciar Sesion");
         btnLogin.setDefaultButton(true);
-        btnLogin.setStyle("-fx-background-color: #1a237e; -fx-text-fill: white; -fx-font-size: 14px; -fx-padding: 10 30;");
+        btnLogin.setStyle("-fx-background-color: #1a237e; -fx-text-fill: white; " +
+                          "-fx-font-size: 14px; -fx-padding: 10 30;");
         btnLogin.setOnAction(e -> {
-            String email = txtEmail.getText().trim();
+            String email    = txtEmail.getText().trim();
             String password = txtPassword.getText();
 
             if (!validador.validarEmail(email)) {
@@ -130,21 +132,17 @@ public class LoginView {
         PasswordField txtConfirmar = new PasswordField();
         txtConfirmar.setPromptText("Repita la contrasena");
 
-        Label lblTelefono = new Label("Telefono:");
-        TextField txtTelefono = new TextField();
-        txtTelefono.setPromptText("Opcional");
-
         Label lblMensaje = new Label();
         lblMensaje.setStyle("-fx-text-fill: red;");
 
         Button btnRegister = new Button("Registrarse");
-        btnRegister.setStyle("-fx-background-color: #2e7d32; -fx-text-fill: white; -fx-font-size: 14px; -fx-padding: 10 30;");
+        btnRegister.setStyle("-fx-background-color: #2e7d32; -fx-text-fill: white; " +
+                             "-fx-font-size: 14px; -fx-padding: 10 30;");
         btnRegister.setOnAction(e -> {
-            String nombre = txtNombre.getText().trim();
-            String email = txtEmail.getText().trim();
-            String password = txtPassword.getText();
+            String nombre    = txtNombre.getText().trim();
+            String email     = txtEmail.getText().trim();
+            String password  = txtPassword.getText();
             String confirmar = txtConfirmar.getText();
-            String telefono = txtTelefono.getText().trim();
 
             if (!validador.validarNombre(nombre)) {
                 lblMensaje.setText("Nombre invalido");
@@ -163,14 +161,14 @@ public class LoginView {
                 return;
             }
 
-            if (authController.registrar(nombre, email, password, "usuario")) {
+            // [SEC-004] Sin parámetro de rol: el registro público siempre crea rol USUARIO.
+            if (authController.registrar(nombre, email, password)) {
                 lblMensaje.setStyle("-fx-text-fill: green;");
                 lblMensaje.setText("Registro exitoso. Ahora puede iniciar sesion.");
                 txtNombre.clear();
                 txtEmail.clear();
                 txtPassword.clear();
                 txtConfirmar.clear();
-                txtTelefono.clear();
             } else {
                 lblMensaje.setStyle("-fx-text-fill: red;");
                 lblMensaje.setText(authController.getUltimoError());
@@ -189,9 +187,7 @@ public class LoginView {
         grid.add(txtPassword, 1, 2);
         grid.add(lblConfirmar, 0, 3);
         grid.add(txtConfirmar, 1, 3);
-        grid.add(lblTelefono, 0, 4);
-        grid.add(txtTelefono, 1, 4);
-        grid.add(btnRegister, 1, 5);
+        grid.add(btnRegister, 1, 4);
         GridPane.setMargin(btnRegister, new Insets(10, 0, 0, 0));
 
         VBox panel = new VBox(15, grid, lblMensaje);

@@ -11,11 +11,18 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Correcciones aplicadas:
+ *  [SEC-008] e.printStackTrace() reemplazado por mensajes de log internos.
+ *            Los ResultSet se cierran correctamente mediante try-with-resources.
+ */
 public class IncidenteDAOImpl implements IncidenteDAO {
 
     @Override
     public int crear(Incidente incidente) {
-        String sql = "INSERT INTO incidentes (titulo, descripcion, fecha_creacion, usuario_id, tecnico_id, estado, prioridad) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO incidentes " +
+                     "(titulo, descripcion, fecha_creacion, usuario_id, tecnico_id, estado, prioridad) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?)";
 
         try (Connection conn = ConexionBD.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -35,19 +42,21 @@ public class IncidenteDAOImpl implements IncidenteDAO {
             pstmt.executeUpdate();
 
             try (ResultSet rs = pstmt.getGeneratedKeys()) {
-                if (rs.next()) {
-                    return rs.getInt(1);
-                }
+                if (rs.next()) return rs.getInt(1);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            // [SEC-008] Sin stack trace expuesto al exterior
+            System.err.println("[IncidenteDAOImpl] Error al crear incidente: " + e.getMessage());
         }
         return -1;
     }
 
     @Override
     public boolean actualizar(Incidente incidente) {
-        String sql = "UPDATE incidentes SET titulo = ?, descripcion = ?, fecha_actualizacion = ?, tecnico_id = ?, estado = ?, prioridad = ? WHERE id = ?";
+        String sql = "UPDATE incidentes " +
+                     "SET titulo = ?, descripcion = ?, fecha_actualizacion = ?, " +
+                     "    tecnico_id = ?, estado = ?, prioridad = ? " +
+                     "WHERE id = ?";
 
         try (Connection conn = ConexionBD.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -66,7 +75,7 @@ public class IncidenteDAOImpl implements IncidenteDAO {
 
             return pstmt.executeUpdate() > 0;
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("[IncidenteDAOImpl] Error al actualizar incidente: " + e.getMessage());
             return false;
         }
     }
@@ -79,13 +88,11 @@ public class IncidenteDAOImpl implements IncidenteDAO {
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
             pstmt.setInt(1, id);
-            ResultSet rs = pstmt.executeQuery();
-
-            if (rs.next()) {
-                return mapResultSetToIncidente(rs);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) return mapResultSetToIncidente(rs);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("[IncidenteDAOImpl] Error al buscar incidente: " + e.getMessage());
         }
         return null;
     }
@@ -99,11 +106,9 @@ public class IncidenteDAOImpl implements IncidenteDAO {
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
 
-            while (rs.next()) {
-                incidentes.add(mapResultSetToIncidente(rs));
-            }
+            while (rs.next()) incidentes.add(mapResultSetToIncidente(rs));
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("[IncidenteDAOImpl] Error al listar incidentes: " + e.getMessage());
         }
         return incidentes;
     }
@@ -117,13 +122,11 @@ public class IncidenteDAOImpl implements IncidenteDAO {
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
             pstmt.setInt(1, usuarioId);
-            ResultSet rs = pstmt.executeQuery();
-
-            while (rs.next()) {
-                incidentes.add(mapResultSetToIncidente(rs));
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) incidentes.add(mapResultSetToIncidente(rs));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("[IncidenteDAOImpl] Error al listar incidentes por usuario: " + e.getMessage());
         }
         return incidentes;
     }
@@ -137,13 +140,11 @@ public class IncidenteDAOImpl implements IncidenteDAO {
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
             pstmt.setInt(1, tecnicoId);
-            ResultSet rs = pstmt.executeQuery();
-
-            while (rs.next()) {
-                incidentes.add(mapResultSetToIncidente(rs));
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) incidentes.add(mapResultSetToIncidente(rs));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("[IncidenteDAOImpl] Error al listar incidentes por técnico: " + e.getMessage());
         }
         return incidentes;
     }
@@ -157,13 +158,11 @@ public class IncidenteDAOImpl implements IncidenteDAO {
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
             pstmt.setString(1, estado.name());
-            ResultSet rs = pstmt.executeQuery();
-
-            while (rs.next()) {
-                incidentes.add(mapResultSetToIncidente(rs));
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) incidentes.add(mapResultSetToIncidente(rs));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("[IncidenteDAOImpl] Error al listar incidentes por estado: " + e.getMessage());
         }
         return incidentes;
     }
@@ -178,7 +177,7 @@ public class IncidenteDAOImpl implements IncidenteDAO {
             pstmt.setInt(1, id);
             return pstmt.executeUpdate() > 0;
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("[IncidenteDAOImpl] Error al eliminar incidente: " + e.getMessage());
             return false;
         }
     }
@@ -190,14 +189,16 @@ public class IncidenteDAOImpl implements IncidenteDAO {
         inc.setDescripcion(rs.getString("descripcion"));
         inc.setFechaCreacion(rs.getTimestamp("fecha_creacion").toLocalDateTime());
         inc.setUsuarioId(rs.getInt("usuario_id"));
+
         int tecnicoId = rs.getInt("tecnico_id");
         inc.setTecnicoId(rs.wasNull() ? null : tecnicoId);
+
         inc.setEstado(EstadoIncidente.valueOf(rs.getString("estado")));
         inc.setPrioridad(Prioridad.valueOf(rs.getString("prioridad")));
-        Timestamp fechaActualizacion = rs.getTimestamp("fecha_actualizacion");
-        if (fechaActualizacion != null) {
-            inc.setFechaActualizacion(fechaActualizacion.toLocalDateTime());
-        }
+
+        Timestamp fechaAct = rs.getTimestamp("fecha_actualizacion");
+        if (fechaAct != null) inc.setFechaActualizacion(fechaAct.toLocalDateTime());
+
         return inc;
     }
 }

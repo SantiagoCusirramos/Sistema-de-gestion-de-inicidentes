@@ -1,72 +1,66 @@
 package Utils;
 
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import org.mindrot.jbcrypt.BCrypt;
+
 import java.sql.Connection;
-import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 
 public class ConexionBD {
 
-    // Configuración de la base de datos
-    private static final String URL = "jdbc:mysql://localhost:3306/sistema_incidentes";
-    private static final String USUARIO = "root";
-    private static final String PASSWORD = "";
-    private static final String DRIVER = "com.mysql.cj.jdbc.Driver";
+    private static final HikariDataSource dataSource;
 
-    private static Connection connection = null;
+    static {
+        String dbUrl  = System.getenv("DB_URL");
+        String dbUser = System.getenv("DB_USER");
+        String dbPass = System.getenv("DB_PASS");
 
-    // Constructor privado para patrón Singleton
+        if (dbUrl == null || dbUrl.isBlank()) {
+            throw new ExceptionInInitializerError(
+                "Variable de entorno DB_URL no configurada. " +
+                "Ejemplo: DB_URL=jdbc:mysql://localhost:3306/sistema_incidentes?serverTimezone=UTC");
+        }
+        if (dbUser == null || dbUser.isBlank()) {
+            throw new ExceptionInInitializerError(
+                "Variable de entorno DB_USER no configurada.");
+        }
+        if (dbPass == null) {
+            throw new ExceptionInInitializerError(
+                "Variable de entorno DB_PASS no configurada.");
+        }
+
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(dbUrl);
+        config.setUsername(dbUser);
+        config.setPassword(dbPass);
+        config.setMaximumPoolSize(10);
+        config.setMinimumIdle(2);
+        config.setConnectionTimeout(30_000);
+        config.setIdleTimeout(600_000);
+        config.setMaxLifetime(1_800_000);
+        config.setConnectionTestQuery("SELECT 1");
+
+        dataSource = new HikariDataSource(config);
+    }
+
     private ConexionBD() {}
 
-    // Obtener conexión (Singleton con renovación automática)
-    public static Connection getConnection() {
-        try {
-            if (connection == null || connection.isClosed()) {
-                connection = null;
-                Class.forName(DRIVER);
-                connection = DriverManager.getConnection(URL, USUARIO, PASSWORD);
-                System.out.println("✅ Conexión a base de datos establecida");
-            }
-        } catch (ClassNotFoundException e) {
-            System.err.println("❌ Error: Driver MySQL no encontrado");
-            e.printStackTrace();
-        } catch (SQLException e) {
-            System.err.println("❌ Error al conectar a la base de datos");
-            e.printStackTrace();
-        }
-        return connection;
+    public static Connection getConnection() throws SQLException {
+        return dataSource.getConnection();
     }
 
-    // Cerrar conexión
-    public static void closeConnection() {
-        if (connection != null) {
-            try {
-                connection.close();
-                connection = null;
-                System.out.println("🔒 Conexión a base de datos cerrada");
-            } catch (SQLException e) {
-                System.err.println("❌ Error al cerrar la conexión");
-                e.printStackTrace();
-            }
+    public static void cerrarPool() {
+        if (dataSource != null && !dataSource.isClosed()) {
+            dataSource.close();
+            System.out.println("Pool de conexiones cerrado.");
         }
     }
 
-    // Verificar si la conexión está activa
-    public static boolean isConnected() {
-        try {
-            return connection != null && !connection.isClosed();
-        } catch (SQLException e) {
-            return false;
-        }
-    }
-
-    // Método para crear las tablas automáticamente (útil para primera ejecución)
     public static void inicializarBaseDatos() {
-        Connection conn = getConnection();
-        if (conn == null) {
-            System.err.println("❌ No se pudo inicializar la base de datos: conexion nula");
-            return;
-        }
         String crearTablaUsuarios = """
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INT PRIMARY KEY AUTO_INCREMENT,
@@ -78,6 +72,8 @@ public class ConexionBD {
                 activo BOOLEAN DEFAULT TRUE,
                 fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 ultimo_login TIMESTAMP NULL,
+                intentos_fallidos INT NOT NULL DEFAULT 0,
+                bloqueado_hasta TIMESTAMP NULL,
                 INDEX idx_email (email),
                 INDEX idx_rol (rol)
             )
@@ -150,38 +146,59 @@ public class ConexionBD {
             )
             """;
 
-        String insertarAdmin = """
-            INSERT INTO usuarios (nombre, email, password, rol, telefono) 
-            SELECT 'Administrador', 'admin@sistema.com', 'YWRtaW4xMjM=', 'ADMIN', '123456789'
-            WHERE NOT EXISTS (SELECT 1 FROM usuarios WHERE email = 'admin@sistema.com')
-            """;
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement()) {
 
-        try (Statement stmt = getConnection().createStatement()) {
             stmt.execute(crearTablaUsuarios);
             stmt.execute(crearTablaIncidentes);
             stmt.execute(crearTablaComentarios);
             stmt.execute(crearTablaHistorial);
             stmt.execute(crearTablaNotificaciones);
-            stmt.execute(insertarAdmin);
-            System.out.println("✅ Base de datos inicializada correctamente");
+
+            insertarAdminInicial(conn);
+
+            System.out.println("Base de datos inicializada correctamente.");
+
         } catch (SQLException e) {
-            System.err.println("❌ Error al inicializar la base de datos");
-            e.printStackTrace();
+            System.err.println("Error al inicializar la base de datos: " + e.getMessage());
+            throw new RuntimeException("No se pudo inicializar la base de datos.", e);
         }
     }
 
-    // Método para probar la conexión
-    public static void testConexion() {
-        try {
-            Connection conn = getConnection();
-            if (conn != null && !conn.isClosed()) {
-                System.out.println("✅ Conexión exitosa a: " + URL);
-                System.out.println("📊 Base de datos: " + conn.getCatalog());
-                System.out.println("🔧 Versión MySQL: " + conn.getMetaData().getDatabaseProductVersion());
+    private static void insertarAdminInicial(Connection conn) throws SQLException {
+        String adminEmail = "admin@sistema.in";
+
+        String checkSql = "SELECT COUNT(*) FROM usuarios WHERE email = ?";
+        try (PreparedStatement check = conn.prepareStatement(checkSql)) {
+            check.setString(1, adminEmail);
+            try (ResultSet rs = check.executeQuery()) {
+                if (rs.next() && rs.getInt(1) > 0) {
+                    System.out.println("Admin inicial ya existe. Saltando creación.");
+                    return;
+                }
             }
-        } catch (SQLException e) {
-            System.err.println("❌ Error en prueba de conexión");
-            e.printStackTrace();
+        }
+
+        String adminPass = System.getenv("ADMIN_INITIAL_PASSWORD");
+        if (adminPass == null || adminPass.isBlank()) {
+            throw new IllegalStateException(
+                "Variable de entorno ADMIN_INITIAL_PASSWORD no configurada. " +
+                "Ejemplo: export ADMIN_INITIAL_PASSWORD=\"MiContraseña$egura2024\"");
+        }
+
+        String hashBcrypt = BCrypt.hashpw(adminPass, BCrypt.gensalt(12));
+
+        String insertSql = """
+            INSERT INTO usuarios (nombre, email, password, rol, telefono)
+            VALUES (?, ?, ?, 'ADMIN', ?)
+            """;
+        try (PreparedStatement insert = conn.prepareStatement(insertSql)) {
+            insert.setString(1, "Administrador");
+            insert.setString(2, adminEmail);
+            insert.setString(3, hashBcrypt);
+            insert.setString(4, "123456789");
+            insert.executeUpdate();
+            System.out.println("Admin inicial creado correctamente.");
         }
     }
 }
