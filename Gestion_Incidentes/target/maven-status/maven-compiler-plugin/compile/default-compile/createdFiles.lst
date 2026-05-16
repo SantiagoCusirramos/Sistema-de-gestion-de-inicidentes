@@ -3,11 +3,11 @@ Controller/IncidenteController.class
 Service/IncidenteService.class
 View/IncidenteView.class
 Service/UsuarioService.class
-Main.class
 Model/HistorialEstado.class
+Main.class
 enums/Prioridad.class
-Exceptions/IncidenteException.class
 Controller/AuthController.class
+Exceptions/IncidenteException.class
 Exceptions/PermisoDenegadoException.class
 Exceptions/AutenticacionException.class
 Utils/Validador.class
@@ -17,8 +17,8 @@ Service/ReporteService.class
 DAOs/IncidenteDAO.class
 enums/EstadoIncidente.class
 Exceptions/BaseDeDatosException.class
-Exceptions/ValidacionException.class
 Model/Incidente.class
+Exceptions/ValidacionException.class
 Service/UsuarioService$1.class
 Exceptions/UsuarioException.class
 DAOs/UsuarioDAO.class

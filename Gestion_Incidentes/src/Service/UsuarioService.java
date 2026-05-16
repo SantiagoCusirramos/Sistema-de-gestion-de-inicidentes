@@ -7,12 +7,17 @@ import Model.Usuario;
 import Utils.Validador;
 import enums.RolUsuario;
 
+import org.mindrot.jbcrypt.BCrypt;
+
 import java.util.List;
 
 public class UsuarioService {
 
     private UsuarioDAO usuarioDAO;
     private Validador validador;
+
+    // Costo de BCrypt (10-12 es razonable)
+    private static final int BCRYPT_ROUNDS = 12;
 
     public UsuarioService() {
         this.usuarioDAO = new UsuarioDAOImpl();
@@ -34,7 +39,7 @@ public class UsuarioService {
             throw new UsuarioException("La contraseña debe tener al menos 6 caracteres");
         }
 
-        if (usuarioDAO.buscarPorEmail(email) != null) {
+        if (usuarioDAO.buscarPorEmail(email.toLowerCase().trim()) != null) {
             throw new UsuarioException("El email ya está registrado");
         }
 
@@ -50,18 +55,31 @@ public class UsuarioService {
     }
 
     public Usuario login(String email, String password) throws UsuarioException {
-        if (email == null || password == null) {
+        if (email == null || email.trim().isEmpty()) {
+            throw new UsuarioException("Email y contraseña son obligatorios");
+        }
+        if (password == null || password.trim().isEmpty()) {
             throw new UsuarioException("Email y contraseña son obligatorios");
         }
 
-        Usuario usuario = usuarioDAO.buscarPorEmail(email.toLowerCase().trim());
+        String emailNormalizado = email.toLowerCase().trim();
+        Usuario usuario = usuarioDAO.buscarPorEmail(emailNormalizado);
 
         if (usuario == null) {
-            throw new UsuarioException("Usuario no encontrado");
+            throw new UsuarioException("Credenciales incorrectas");
         }
 
-        if (!verificarPassword(password, usuario.getPassword())) {
-            throw new UsuarioException("Contraseña incorrecta");
+        String passwordAlmacenada = usuario.getPassword();
+
+        if (!verificarPassword(password, passwordAlmacenada)) {
+            throw new UsuarioException("Credenciales incorrectas");
+        }
+
+        // Migración automática: si la contraseña estaba en texto plano,
+        // se reemplaza por un hash BCrypt al primer login exitoso.
+        if (esTextoPlano(passwordAlmacenada)) {
+            usuario.setPassword(encriptarPassword(password));
+            usuarioDAO.actualizar(usuario);
         }
 
         return usuario;
@@ -75,14 +93,16 @@ public class UsuarioService {
             throw new UsuarioException("Usuario no encontrado");
         }
 
-        if (!usuario.getEmail().equals(email)) {
-            if (!validador.validarEmail(email)) {
+        String emailNormalizado = email != null ? email.toLowerCase().trim() : "";
+
+        if (!usuario.getEmail().equals(emailNormalizado)) {
+            if (!validador.validarEmail(emailNormalizado)) {
                 throw new UsuarioException("Email inválido");
             }
-            if (usuarioDAO.buscarPorEmail(email) != null) {
+            if (usuarioDAO.buscarPorEmail(emailNormalizado) != null) {
                 throw new UsuarioException("El email ya está en uso");
             }
-            usuario.setEmail(email.toLowerCase().trim());
+            usuario.setEmail(emailNormalizado);
         }
 
         if (nombre != null && !nombre.trim().isEmpty()) {
@@ -125,7 +145,6 @@ public class UsuarioService {
 
     public List<Usuario> listarTodosUsuarios() {
         return usuarioDAO.listarTodos();
-
     }
 
     public List<Usuario> listarUsuariosPorRol(RolUsuario rol) {
@@ -171,12 +190,54 @@ public class UsuarioService {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Métodos privados de manejo de contraseñas
+    // -------------------------------------------------------------------------
+
+    /**
+     * Genera un hash BCrypt de la contraseña.
+     */
     private String encriptarPassword(String password) {
-        return java.util.Base64.getEncoder().encodeToString(password.getBytes());
+        return BCrypt.hashpw(password, BCrypt.gensalt(BCRYPT_ROUNDS));
     }
 
-    private boolean verificarPassword(String password, String passwordEncriptado) {
-        String encoded = java.util.Base64.getEncoder().encodeToString(password.getBytes());
-        return encoded.equals(passwordEncriptado);
+    /**
+     * Verifica la contraseña soportando dos formatos:
+     *  1. Hash BCrypt (contraseñas nuevas, empiezan con "$2a$" o "$2b$")
+     *  2. Texto plano (contraseñas legacy cargadas directamente en la BD)
+     *
+     * En producción, una vez que todos los usuarios hayan iniciado sesión
+     * al menos una vez, las contraseñas legacy ya no existirán.
+     */
+    private boolean verificarPassword(String passwordIngresada, String passwordAlmacenada) {
+        if (passwordAlmacenada == null || passwordAlmacenada.isEmpty()) {
+            return false;
+        }
+
+        if (esBCrypt(passwordAlmacenada)) {
+            // Contraseña ya hasheada con BCrypt
+            try {
+                return BCrypt.checkpw(passwordIngresada, passwordAlmacenada);
+            } catch (Exception e) {
+                return false;
+            }
+        } else {
+            // Contraseña legacy en texto plano (datos de seed/BD)
+            return passwordAlmacenada.equals(passwordIngresada);
+        }
+    }
+
+    /**
+     * Detecta si el valor almacenado es un hash BCrypt válido.
+     */
+    private boolean esBCrypt(String valor) {
+        return valor != null && (valor.startsWith("$2a$") || valor.startsWith("$2b$") || valor.startsWith("$2y$"));
+    }
+
+    /**
+     * Detecta si el valor almacenado es texto plano (no BCrypt).
+     */
+    private boolean esTextoPlano(String valor) {
+        return !esBCrypt(valor);
     }
 }
