@@ -30,8 +30,15 @@ import javafx.scene.text.FontWeight;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
+/**
+ * Correcciones aplicadas:
+ *  [BUG-012] crearGraficos() ahora llama a los métodos de ReporteService que
+ *             aceptan usuarioId + rol, de modo que un TECNICO solo ve las
+ *             estadísticas de sus propios incidentes asignados, no las globales.
+ *  [BUG-012] crearTablaRecientes() usa getIncidentesRecientes(limite, id, rol)
+ *             en lugar del método legacy que devuelve todos los incidentes.
+ */
 public class ReporteView {
 
     private ReporteService reporteService;
@@ -39,9 +46,9 @@ public class ReporteView {
     private Usuario usuarioActual;
 
     public ReporteView(Usuario usuarioActual) {
-        this.reporteService = new ReporteService();
+        this.reporteService      = new ReporteService();
         this.incidenteController = new IncidenteController(usuarioActual);
-        this.usuarioActual = usuarioActual;
+        this.usuarioActual       = usuarioActual;
     }
 
     public Node getContenido() {
@@ -51,8 +58,13 @@ public class ReporteView {
         Label lblTitulo = new Label("Reportes y Estadisticas");
         lblTitulo.setFont(Font.font("Arial", FontWeight.BOLD, 18));
 
+        // Subtítulo que indica el alcance de los datos según el rol
+        Label lblAlcance = new Label(obtenerTextoAlcance());
+        lblAlcance.setStyle("-fx-text-fill: #555555; -fx-font-style: italic;");
+
         root.getChildren().addAll(
                 lblTitulo,
+                lblAlcance,
                 crearResumenGeneral(),
                 crearGraficos(),
                 crearTablaRecientes()
@@ -60,21 +72,32 @@ public class ReporteView {
         return root;
     }
 
+    /** Texto descriptivo que indica si los datos son globales o filtrados. */
+    private String obtenerTextoAlcance() {
+        if (usuarioActual.getRol() == RolUsuario.ADMIN) {
+            return "Mostrando estadísticas globales del sistema (todos los incidentes)";
+        } else {
+            return "Mostrando estadísticas de tus incidentes asignados";
+        }
+    }
+
     private HBox crearResumenGeneral() {
+        // incidenteController ya filtra por rol internamente
         int total = incidenteController.getTotalIncidentes();
 
         long pendientes = incidenteController.getIncidentesPorEstado(EstadoIncidente.PENDIENTE);
-        long enProceso = incidenteController.getIncidentesPorEstado(EstadoIncidente.EN_PROCESO);
-        long resueltos = incidenteController.getIncidentesPorEstado(EstadoIncidente.RESUELTO);
-        long cerrados = incidenteController.getIncidentesPorEstado(EstadoIncidente.CERRADO);
+        long enProceso  = incidenteController.getIncidentesPorEstado(EstadoIncidente.EN_PROCESO);
+        long resueltos  = incidenteController.getIncidentesPorEstado(EstadoIncidente.RESUELTO);
+        long cerrados   = incidenteController.getIncidentesPorEstado(EstadoIncidente.CERRADO);
 
-        VBox cardTotal = crearCard("Total", String.valueOf(total), "#1a237e");
+        VBox cardTotal      = crearCard("Total",      String.valueOf(total),      "#1a237e");
         VBox cardPendientes = crearCard("Pendientes", String.valueOf(pendientes), "#e65100");
-        VBox cardProceso = crearCard("En Proceso", String.valueOf(enProceso), "#1565c0");
-        VBox cardResueltos = crearCard("Resueltos", String.valueOf(resueltos), "#2e7d32");
-        VBox cardCerrados = crearCard("Cerrados", String.valueOf(cerrados), "#6a1b9a");
+        VBox cardProceso    = crearCard("En Proceso", String.valueOf(enProceso),  "#1565c0");
+        VBox cardResueltos  = crearCard("Resueltos",  String.valueOf(resueltos),  "#2e7d32");
+        VBox cardCerrados   = crearCard("Cerrados",   String.valueOf(cerrados),   "#6a1b9a");
 
-        HBox cards = new HBox(12, cardTotal, cardPendientes, cardProceso, cardResueltos, cardCerrados);
+        HBox cards = new HBox(12,
+            cardTotal, cardPendientes, cardProceso, cardResueltos, cardCerrados);
         cards.setPadding(new Insets(10, 0, 10, 0));
         return cards;
     }
@@ -102,12 +125,15 @@ public class ReporteView {
         pieChart.setPrefWidth(350);
         pieChart.setPrefHeight(300);
 
-        Map<Prioridad, Integer> stats = reporteService.getIncidentesPorPrioridad();
+        // [BUG-012] Usar método con rol para que TECNICO no vea datos globales
+        Map<Prioridad, Integer> stats = reporteService.getIncidentesPorPrioridad(
+            usuarioActual.getId(), usuarioActual.getRol());
+
         for (Map.Entry<Prioridad, Integer> entry : stats.entrySet()) {
             if (entry.getValue() > 0) {
                 pieChart.getData().add(new PieChart.Data(
-                        entry.getKey().name() + " (" + entry.getValue() + ")",
-                        entry.getValue()));
+                    entry.getKey().name() + " (" + entry.getValue() + ")",
+                    entry.getValue()));
             }
         }
 
@@ -128,8 +154,9 @@ public class ReporteView {
         barChart.setLegendVisible(false);
 
         XYChart.Series<String, Number> serie = new XYChart.Series<>();
-        List<Incidente> todos = incidenteController.listarIncidentes();
 
+        // incidenteController.listarIncidentes() ya filtra por rol
+        List<Incidente> todos = incidenteController.listarIncidentes();
         for (EstadoIncidente estado : EstadoIncidente.values()) {
             long count = todos.stream().filter(i -> i.getEstado() == estado).count();
             serie.getData().add(new XYChart.Data<>(estado.name(), count));
@@ -155,24 +182,26 @@ public class ReporteView {
         colId.setCellValueFactory(new PropertyValueFactory<>("id"));
         colId.setPrefWidth(50);
 
-        TableColumn<Incidente, String> colTitulo = new TableColumn<>("Titulo");
-        colTitulo.setCellValueFactory(new PropertyValueFactory<>("titulo"));
+        TableColumn<Incidente, String> colTituloCol = new TableColumn<>("Titulo");
+        colTituloCol.setCellValueFactory(new PropertyValueFactory<>("titulo"));
 
         TableColumn<Incidente, String> colEstado = new TableColumn<>("Estado");
         colEstado.setCellValueFactory(cd ->
-                new SimpleStringProperty(cd.getValue().getEstado().name()));
+            new SimpleStringProperty(cd.getValue().getEstado().name()));
 
         TableColumn<Incidente, String> colPrioridad = new TableColumn<>("Prioridad");
         colPrioridad.setCellValueFactory(cd ->
-                new SimpleStringProperty(cd.getValue().getPrioridad().name()));
+            new SimpleStringProperty(cd.getValue().getPrioridad().name()));
 
         TableColumn<Incidente, LocalDate> colFecha = new TableColumn<>("Fecha");
         colFecha.setCellValueFactory(cd ->
-                new SimpleObjectProperty<>(cd.getValue().getFechaCreacion().toLocalDate()));
+            new SimpleObjectProperty<>(cd.getValue().getFechaCreacion().toLocalDate()));
 
-        tabla.getColumns().addAll(colId, colTitulo, colEstado, colPrioridad, colFecha);
+        tabla.getColumns().addAll(colId, colTituloCol, colEstado, colPrioridad, colFecha);
 
-        List<Incidente> recientes = reporteService.getIncidentesRecientes(15);
+        // [BUG-012] Usar método con rol para filtrar correctamente
+        List<Incidente> recientes = reporteService.getIncidentesRecientes(
+            15, usuarioActual.getId(), usuarioActual.getRol());
         tabla.setItems(FXCollections.observableArrayList(recientes));
 
         VBox panel = new VBox(8, lblTitulo, tabla);

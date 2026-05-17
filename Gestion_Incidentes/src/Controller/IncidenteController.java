@@ -13,9 +13,11 @@ import java.util.List;
 
 /**
  * Correcciones aplicadas:
- *  [SEC-006] cerrarIncidente propaga el rol del usuario al Service para una autorización correcta.
- *  [SEC-005] listarComentarios propaga usuarioId y rol al Service para control de acceso.
+ *  [SEC-006] cerrarIncidente propaga el rol del usuario al Service.
+ *  [SEC-005] listarComentarios propaga usuarioId y rol al Service.
  *  [SEC-012] Validaciones de longitud máxima antes de llegar al Service.
+ *  [BUG-015] crearIncidente valida que prioridad no sea null antes de continuar,
+ *             evitando un NullPointerException no controlado en el DAO.
  */
 public class IncidenteController {
 
@@ -60,6 +62,12 @@ public class IncidenteController {
                 "La descripción no puede superar " + MAX_DESCRIPCION + " caracteres");
         }
 
+        // [BUG-015] Validar prioridad no nula con excepción descriptiva
+        if (prioridad == null) {
+            throw new IncidenteException(
+                "La prioridad es obligatoria. Valores válidos: BAJA, MEDIA, ALTA, CRITICA");
+        }
+
         return incidenteService.crearIncidente(
             titulo.trim(), descripcion.trim(), usuarioActual.getId(), prioridad);
     }
@@ -92,7 +100,6 @@ public class IncidenteController {
         if (solucion == null || solucion.trim().isEmpty()) {
             throw new IncidenteException("Debe proporcionar una solución");
         }
-        // [SEC-012]
         if (solucion.trim().length() > MAX_SOLUCION) {
             throw new IncidenteException(
                 "La solución no puede superar " + MAX_SOLUCION + " caracteres");
@@ -103,8 +110,7 @@ public class IncidenteController {
     }
 
     /**
-     * [SEC-006] Se propaga el rol al Service para que la lógica de autorización
-     *            sea correcta: ADMIN puede cerrar cualquier incidente.
+     * [SEC-006] Se propaga el rol al Service para autorización correcta.
      */
     public boolean cerrarIncidente(int incidenteId)
             throws IncidenteException, PermisoDenegadoException {
@@ -117,7 +123,6 @@ public class IncidenteController {
                 "Los usuarios no pueden cerrar incidentes. Solo técnicos o administradores.");
         }
 
-        // [SEC-006] El rol se pasa para que el Service lo use en la verificación
         return incidenteService.cerrarIncidente(
             incidenteId, usuarioActual.getId(), usuarioActual.getRol());
     }
@@ -141,7 +146,6 @@ public class IncidenteController {
         if (mensaje == null || mensaje.trim().isEmpty()) {
             throw new IncidenteException("El comentario no puede estar vacío");
         }
-        // [SEC-012]
         if (mensaje.trim().length() > MAX_COMENTARIO) {
             throw new IncidenteException(
                 "El comentario no puede superar " + MAX_COMENTARIO + " caracteres");

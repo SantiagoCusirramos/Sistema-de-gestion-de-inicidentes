@@ -13,17 +13,17 @@ import java.util.List;
 
 /**
  * Correcciones aplicadas:
- *  [SEC-009] Eliminado soporte de contraseñas en texto plano (legacy). Solo BCrypt.
+ *  [SEC-009] Solo BCrypt. No se acepta texto plano.
  *  [SEC-010] Protección contra fuerza bruta: bloqueo temporal tras intentos fallidos.
- *            Se persiste en BD (columnas intentos_fallidos y bloqueado_hasta en usuarios).
+ *  [BUG-010] cambiarPassword ahora rechaza una nueva contraseña igual a la actual.
  */
 public class UsuarioService {
 
     private UsuarioDAO usuarioDAO;
     private Validador validador;
 
-    private static final int BCRYPT_ROUNDS    = 12;
-    private static final int MAX_INTENTOS     = 5;
+    private static final int BCRYPT_ROUNDS     = 12;
+    private static final int MAX_INTENTOS      = 5;
     private static final long BLOQUEO_SEGUNDOS = 300L; // 5 minutos
 
     // Límites de longitud [SEC-012]
@@ -40,25 +40,15 @@ public class UsuarioService {
     // Registro
     // -------------------------------------------------------------------------
 
-    /**
-     * Registra un usuario con rol USUARIO (rol fijo para autoregistro público).
-     * [SEC-004] El rol nunca viene del exterior en el registro público.
-     */
     public Usuario registrarUsuario(String nombre, String email, String password)
             throws UsuarioException {
         return registrarUsuarioConRol(nombre, email, password, RolUsuario.USUARIO);
     }
 
-    /**
-     * Registra un usuario con un rol específico.
-     * Solo debe ser invocado desde código con permisos de ADMIN ya verificados.
-     * [SEC-004] La validación de autorización se hace en AuthController antes de llamar aquí.
-     */
     public Usuario registrarUsuarioConRol(String nombre, String email,
-                                          String password, RolUsuario rol)
+                                           String password, RolUsuario rol)
             throws UsuarioException {
 
-        // Validaciones de entrada [SEC-012]
         if (nombre == null || nombre.trim().isEmpty()) {
             throw new UsuarioException("El nombre es obligatorio");
         }
@@ -108,18 +98,13 @@ public class UsuarioService {
         String emailNormalizado = email.toLowerCase().trim();
         Usuario usuario = usuarioDAO.buscarPorEmail(emailNormalizado);
 
-        // Siempre verificar, incluso si el usuario no existe,
-        // para evitar timing attacks basados en la existencia de la cuenta.
         if (usuario == null) {
-            // Simulamos el tiempo de BCrypt para no revelar existencia del usuario
             BCrypt.checkpw(password, "$2a$12$invalidhashfortimingnormalization00000000000000000000000");
             throw new UsuarioException("Credenciales incorrectas");
         }
 
-        // [SEC-010] Verificar si la cuenta está bloqueada
         verificarBloqueo(usuario);
 
-        // [SEC-009] Solo BCrypt. No se acepta texto plano.
         boolean credencialesValidas = verificarPasswordBcrypt(password, usuario.getPassword());
 
         if (!credencialesValidas) {
@@ -127,7 +112,6 @@ public class UsuarioService {
             throw new UsuarioException("Credenciales incorrectas");
         }
 
-        // Login exitoso: reiniciar contador de intentos
         resetearIntentosFallidos(usuario);
         return usuario;
     }
@@ -205,6 +189,11 @@ public class UsuarioService {
         return usuarioDAO.buscar(id);
     }
 
+    /**
+     * [BUG-010] Se verifica que la nueva contraseña sea diferente a la actual.
+     *            BCrypt no permite comparar hashes directamente, por lo que se
+     *            usa checkpw contra el hash almacenado para detectar igualdad.
+     */
     public boolean cambiarPassword(int id, String passwordActual, String passwordNueva)
             throws UsuarioException {
 
@@ -223,6 +212,11 @@ public class UsuarioService {
         }
         if (passwordNueva.length() > MAX_PASSWORD) {
             throw new UsuarioException("La contraseña no puede superar " + MAX_PASSWORD + " caracteres");
+        }
+
+        // [BUG-010] Rechazar si la nueva contraseña es igual a la actual
+        if (verificarPasswordBcrypt(passwordNueva, usuario.getPassword())) {
+            throw new UsuarioException("La nueva contraseña debe ser diferente a la contraseña actual");
         }
 
         usuario.setPassword(encriptarPassword(passwordNueva));
@@ -249,11 +243,6 @@ public class UsuarioService {
         return usuarioDAO.listarPorRol(RolUsuario.TECNICO);
     }
 
-    /**
-     * Elimina un usuario.
-     * [SEC-011] La verificación del último admin se hace aquí; la atomicidad se garantiza
-     *            delegando al DAO que usa SELECT FOR UPDATE dentro de una transacción.
-     */
     public boolean eliminarUsuario(int id) throws UsuarioException {
         Usuario usuario = usuarioDAO.buscar(id);
         if (usuario == null) {
@@ -261,7 +250,6 @@ public class UsuarioService {
         }
 
         if (usuario.getRol() == RolUsuario.ADMIN) {
-            // [SEC-011] La comprobación atómica se hace en el DAO con bloqueo de fila.
             return usuarioDAO.eliminarAdminSeguro(id);
         }
 
@@ -295,14 +283,9 @@ public class UsuarioService {
         return BCrypt.hashpw(password, BCrypt.gensalt(BCRYPT_ROUNDS));
     }
 
-    /**
-     * Verifica contraseña exclusivamente contra hash BCrypt.
-     * [SEC-009] Soporte de texto plano eliminado completamente.
-     */
     private boolean verificarPasswordBcrypt(String passwordIngresada, String hashAlmacenado) {
         if (hashAlmacenado == null || hashAlmacenado.isBlank()) return false;
         if (!esBCrypt(hashAlmacenado)) {
-            // Hash no reconocido: rechazar y loguear internamente (sin exponer detalles al usuario)
             System.err.println("[SEGURIDAD] Hash de contraseña en formato no reconocido para un usuario. " +
                                "Se requiere migración manual.");
             return false;

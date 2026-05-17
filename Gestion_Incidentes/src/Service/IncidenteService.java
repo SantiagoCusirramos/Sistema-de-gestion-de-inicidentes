@@ -19,15 +19,26 @@ import java.util.Objects;
 
 /**
  * Correcciones aplicadas:
- *  [SEC-005] IDOR: agregarComentario y getComentarios verifican autorización del usuario.
- *  [SEC-006] cerrarIncidente recibe el rol del usuario para autorizar correctamente a ADMIN/TECNICO.
- *  [SEC-007] Comparación de tecnicoId con Objects.equals() para evitar bug de autoboxing con Integer.
+ *  [SEC-005] IDOR: agregarComentario y getComentarios verifican autorización.
+ *  [SEC-006] cerrarIncidente recibe el rol del usuario para autorizar correctamente.
+ *  [SEC-007] Comparación de tecnicoId con Objects.equals() para evitar bug de autoboxing.
  *  [SEC-012] Validaciones de longitud máxima en entradas de texto.
+ *  [BUG-001] resolverIncidente: ADMIN puede resolver cualquier incidente sin importar
+ *             tecnicoId asignado. Solo TECNICO está restringido al suyo.
+ *  [BUG-002] [BUG-003] cambiarEstado: verifica que el TECNICO tenga asignado ese incidente.
+ *             El ADMIN puede cambiar el estado de cualquier incidente.
+ *  [BUG-004] cambiarEstado: valida transiciones de estado permitidas. No se puede saltar
+ *             pasos en el flujo PENDIENTE → EN_PROCESO → RESUELTO → CERRADO.
+ *  [BUG-006] asignarTecnico: verifica que el usuario con tecnicoId tenga rol TECNICO.
+ *  [BUG-007] resolverIncidente: verifica que no esté ya en estado RESUELTO para evitar
+ *             comentarios de solución duplicados.
+ *  [BUG-008] resolverIncidente: verifica que el incidente esté en estado EN_PROCESO.
+ *  [BUG-011] agregarComentario: no permite comentar en incidentes CERRADOS.
  */
 public class IncidenteService {
 
     // Límites de longitud [SEC-012]
-    static final int MAX_TITULO     = 200;
+    static final int MAX_TITULO      = 200;
     static final int MAX_DESCRIPCION = 5000;
     static final int MAX_COMENTARIO  = 2000;
     static final int MAX_SOLUCION    = 3000;
@@ -42,11 +53,14 @@ public class IncidenteService {
         this.usuarioDAO    = new DAOs.Implementacion.UsuarioDAOImpl();
     }
 
+    // -------------------------------------------------------------------------
+    // Crear incidente
+    // -------------------------------------------------------------------------
+
     public Incidente crearIncidente(String titulo, String descripcion,
                                     int usuarioId, Prioridad prioridad)
             throws IncidenteException {
 
-        // [SEC-012] Validación de longitud
         if (titulo != null && titulo.length() > MAX_TITULO) {
             throw new IncidenteException(
                 "El título no puede superar " + MAX_TITULO + " caracteres");
@@ -71,10 +85,27 @@ public class IncidenteService {
         return incidenteDAO.buscar(id);
     }
 
+    // -------------------------------------------------------------------------
+    // Asignar técnico
+    // -------------------------------------------------------------------------
+
+    /**
+     * [BUG-006] Verifica que el usuario con tecnicoId tenga rol TECNICO antes de asignar.
+     */
     public boolean asignarTecnico(int incidenteId, int tecnicoId) throws IncidenteException {
         Incidente inc = incidenteDAO.buscar(incidenteId);
         if (inc == null) {
             throw new IncidenteException("Incidente no encontrado");
+        }
+
+        // [BUG-006] Validar que el usuario destino tenga rol TECNICO
+        Usuario candidato = usuarioDAO.buscar(tecnicoId);
+        if (candidato == null) {
+            throw new IncidenteException("El usuario con ID " + tecnicoId + " no existe");
+        }
+        if (candidato.getRol() != RolUsuario.TECNICO) {
+            throw new IncidenteException(
+                "El usuario '" + candidato.getNombre() + "' no tiene rol de TECNICO");
         }
 
         inc.setTecnicoId(tecnicoId);
@@ -82,10 +113,18 @@ public class IncidenteService {
         return incidenteDAO.actualizar(inc);
     }
 
+    // -------------------------------------------------------------------------
+    // Resolver incidente
+    // -------------------------------------------------------------------------
+
     /**
-     * [SEC-007] Usa Objects.equals() para comparar Integer con int sin riesgo de autoboxing.
+     * [BUG-001] ADMIN puede resolver cualquier incidente (sin importar tecnicoId).
+     *            TECNICO solo puede resolver el incidente que tiene asignado.
+     * [BUG-007] Impide doble resolución (si ya está RESUELTO, rechaza).
+     * [BUG-008] Solo permite resolver si el incidente está en estado EN_PROCESO.
+     * [SEC-007] Usa Objects.equals() para comparar Integer con int.
      */
-    public boolean resolverIncidente(int incidenteId, String solucion, int tecnicoId)
+    public boolean resolverIncidente(int incidenteId, String solucion, int usuarioId)
             throws IncidenteException, PermisoDenegadoException {
 
         Incidente inc = incidenteDAO.buscar(incidenteId);
@@ -93,10 +132,32 @@ public class IncidenteService {
             throw new IncidenteException("Incidente no encontrado");
         }
 
-        // Objects.equals maneja el caso Integer vs int correctamente [SEC-007]
-        if (!Objects.equals(inc.getTecnicoId(), tecnicoId)) {
+        // [BUG-007] Evitar doble resolución
+        if (inc.getEstado() == EstadoIncidente.RESUELTO) {
+            throw new IncidenteException("El incidente ya fue resuelto anteriormente");
+        }
+
+        // [BUG-008] Solo se puede resolver desde EN_PROCESO
+        if (inc.getEstado() != EstadoIncidente.EN_PROCESO) {
+            throw new IncidenteException(
+                "Solo se puede resolver un incidente que esté en estado EN_PROCESO. " +
+                "Estado actual: " + inc.getEstado().name());
+        }
+
+        // [BUG-001] Obtener el usuario que realiza la acción para conocer su rol
+        Usuario actor = usuarioDAO.buscar(usuarioId);
+        if (actor == null) {
+            throw new PermisoDenegadoException("Usuario no encontrado");
+        }
+
+        boolean esAdmin           = actor.getRol() == RolUsuario.ADMIN;
+        boolean esTecnicoAsignado = actor.getRol() == RolUsuario.TECNICO &&
+                                    Objects.equals(inc.getTecnicoId(), usuarioId);
+
+        // ADMIN puede resolver cualquier incidente; TECNICO solo el suyo
+        if (!esAdmin && !esTecnicoAsignado) {
             throw new PermisoDenegadoException(
-                "Solo el técnico asignado puede resolver este incidente");
+                "Solo el técnico asignado o un administrador puede resolver este incidente");
         }
 
         // [SEC-012] Validar longitud de solución
@@ -107,7 +168,7 @@ public class IncidenteService {
 
         Comentario comentario = new Comentario();
         comentario.setIncidenteId(incidenteId);
-        comentario.setUsuarioId(tecnicoId);
+        comentario.setUsuarioId(usuarioId);
         comentario.setMensaje("SOLUCIÓN: " + solucion);
         comentario.setFecha(LocalDateTime.now());
         comentarioDAO.crear(comentario);
@@ -117,12 +178,13 @@ public class IncidenteService {
         return incidenteDAO.actualizar(inc);
     }
 
+    // -------------------------------------------------------------------------
+    // Cerrar incidente
+    // -------------------------------------------------------------------------
+
     /**
-     * [SEC-006] Recibe el rol del usuario para autorizar correctamente.
-     *   - ADMIN: puede cerrar cualquier incidente.
-     *   - TECNICO: solo puede cerrar el incidente que tiene asignado.
-     *   El método previo solo comparaba usuarioId == creador, lo que impedía
-     *   a los admins cerrar incidentes ajenos.
+     * [SEC-006] ADMIN puede cerrar cualquier incidente.
+     *            TECNICO solo puede cerrar el que tiene asignado.
      */
     public boolean cerrarIncidente(int incidenteId, int usuarioId, RolUsuario rol)
             throws IncidenteException, PermisoDenegadoException {
@@ -132,9 +194,9 @@ public class IncidenteService {
             throw new IncidenteException("Incidente no encontrado");
         }
 
-        boolean esAdmin            = rol == RolUsuario.ADMIN;
-        boolean esTecnicoAsignado  = rol == RolUsuario.TECNICO &&
-                                     Objects.equals(inc.getTecnicoId(), usuarioId);
+        boolean esAdmin           = rol == RolUsuario.ADMIN;
+        boolean esTecnicoAsignado = rol == RolUsuario.TECNICO &&
+                                    Objects.equals(inc.getTecnicoId(), usuarioId);
 
         if (!esAdmin && !esTecnicoAsignado) {
             throw new PermisoDenegadoException(
@@ -145,6 +207,10 @@ public class IncidenteService {
         inc.setFechaActualizacion(LocalDateTime.now());
         return incidenteDAO.actualizar(inc);
     }
+
+    // -------------------------------------------------------------------------
+    // Listar incidentes
+    // -------------------------------------------------------------------------
 
     public List<Incidente> getIncidentesPorUsuario(int usuarioId, RolUsuario rol) {
         if (rol == RolUsuario.ADMIN) {
@@ -160,10 +226,13 @@ public class IncidenteService {
         return incidenteDAO.buscar(id);
     }
 
+    // -------------------------------------------------------------------------
+    // Comentarios
+    // -------------------------------------------------------------------------
+
     /**
      * [SEC-005] IDOR corregido: verifica que el usuario tenga acceso al incidente.
-     *   - ADMIN y TECNICO asignado: acceso completo.
-     *   - USUARIO: solo puede comentar en sus propios incidentes.
+     * [BUG-011] No permite comentar en incidentes CERRADOS.
      */
     public boolean agregarComentario(int incidenteId, int usuarioId, String mensaje)
             throws IncidenteException, PermisoDenegadoException {
@@ -171,6 +240,12 @@ public class IncidenteService {
         Incidente inc = incidenteDAO.buscar(incidenteId);
         if (inc == null) {
             throw new IncidenteException("Incidente no encontrado");
+        }
+
+        // [BUG-011] Bloquear comentarios en incidentes cerrados
+        if (inc.getEstado() == EstadoIncidente.CERRADO) {
+            throw new IncidenteException(
+                "No se pueden agregar comentarios a un incidente cerrado");
         }
 
         // [SEC-012] Validar longitud
@@ -203,8 +278,7 @@ public class IncidenteService {
     }
 
     /**
-     * [SEC-005] IDOR corregido: solo devuelve comentarios si el usuario tiene acceso
-     *            al incidente correspondiente.
+     * [SEC-005] IDOR corregido: solo devuelve comentarios si el usuario tiene acceso.
      */
     public List<String> getComentarios(int incidenteId, int usuarioId, RolUsuario rol)
             throws IncidenteException, PermisoDenegadoException {
@@ -214,7 +288,6 @@ public class IncidenteService {
             throw new IncidenteException("Incidente no encontrado");
         }
 
-        // [SEC-005] Verificar que el usuario tiene acceso al incidente
         boolean autorizado = rol == RolUsuario.ADMIN
             || rol == RolUsuario.TECNICO
             || inc.getUsuarioId() == usuarioId;
@@ -233,13 +306,45 @@ public class IncidenteService {
         return resultado;
     }
 
+    // -------------------------------------------------------------------------
+    // Cambiar estado
+    // -------------------------------------------------------------------------
+
+    /**
+     * [BUG-002] [BUG-003] Verifica autorización: ADMIN puede cambiar cualquier
+     *            incidente; TECNICO solo los que tiene asignados.
+     * [BUG-004] Valida el flujo de estados permitido:
+     *            PENDIENTE   → EN_PROCESO
+     *            EN_PROCESO  → RESUELTO | CERRADO (técnico puede cerrar directamente)
+     *            RESUELTO    → CERRADO
+     *            CERRADO     → no se admite ninguna transición
+     */
     public boolean cambiarEstado(int incidenteId, EstadoIncidente nuevoEstado, int usuarioId)
-            throws IncidenteException {
+            throws IncidenteException, PermisoDenegadoException {
 
         Incidente inc = incidenteDAO.buscar(incidenteId);
         if (inc == null) {
             throw new IncidenteException("Incidente no encontrado");
         }
+
+        // [BUG-002] [BUG-003] Verificar autorización por rol
+        Usuario actor = usuarioDAO.buscar(usuarioId);
+        if (actor == null) {
+            throw new PermisoDenegadoException("Usuario no encontrado");
+        }
+
+        boolean esAdmin           = actor.getRol() == RolUsuario.ADMIN;
+        boolean esTecnicoAsignado = actor.getRol() == RolUsuario.TECNICO &&
+                                    Objects.equals(inc.getTecnicoId(), usuarioId);
+
+        if (!esAdmin && !esTecnicoAsignado) {
+            throw new PermisoDenegadoException(
+                "No está autorizado para cambiar el estado de este incidente. " +
+                "Solo el técnico asignado o un administrador puede hacerlo.");
+        }
+
+        // [BUG-004] Validar transición de estado
+        validarTransicion(inc.getEstado(), nuevoEstado);
 
         inc.setEstado(nuevoEstado);
         inc.setFechaActualizacion(LocalDateTime.now());
@@ -253,5 +358,50 @@ public class IncidenteService {
             comentarioDAO.crear(comentario);
         }
         return incidenteDAO.actualizar(inc);
+    }
+
+    /**
+     * [BUG-004] Define las transiciones de estado válidas.
+     * Flujo permitido:
+     *   PENDIENTE  → EN_PROCESO
+     *   EN_PROCESO → RESUELTO
+     *   EN_PROCESO → CERRADO  (cierre directo por admin/tecnico si es necesario)
+     *   RESUELTO   → CERRADO
+     * Cualquier otra transición lanza excepción.
+     */
+    private void validarTransicion(EstadoIncidente estadoActual, EstadoIncidente nuevoEstado)
+            throws IncidenteException {
+
+        if (estadoActual == nuevoEstado) {
+            throw new IncidenteException(
+                "El incidente ya se encuentra en estado " + estadoActual.name());
+        }
+
+        boolean transicionValida;
+        switch (estadoActual) {
+            case PENDIENTE:
+                transicionValida = nuevoEstado == EstadoIncidente.EN_PROCESO;
+                break;
+            case EN_PROCESO:
+                transicionValida = nuevoEstado == EstadoIncidente.RESUELTO
+                                || nuevoEstado == EstadoIncidente.CERRADO;
+                break;
+            case RESUELTO:
+                transicionValida = nuevoEstado == EstadoIncidente.CERRADO;
+                break;
+            case CERRADO:
+                // Un incidente cerrado no puede cambiar de estado
+                transicionValida = false;
+                break;
+            default:
+                transicionValida = false;
+        }
+
+        if (!transicionValida) {
+            throw new IncidenteException(
+                "Transición de estado no permitida: " +
+                estadoActual.name() + " → " + nuevoEstado.name() + ". " +
+                "Flujo válido: PENDIENTE → EN_PROCESO → RESUELTO → CERRADO");
+        }
     }
 }
