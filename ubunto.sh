@@ -18,48 +18,72 @@ hdr "Variables de entorno"
 [[ -z "${DB_URL:-}"   ]] && err "DB_URL no definida.  Ejemplo: export DB_URL=\"jdbc:mysql://localhost:3306/sistema_incidentes?serverTimezone=UTC\""
 [[ -z "${DB_USER:-}"  ]] && err "DB_USER no definida. Ejemplo: export DB_USER=\"root\""
 [[ -z "${DB_PASS+x}" ]] && err "DB_PASS no definida. Ejemplo: export DB_PASS=\"\""
-[[ -z "${ADMIN_INITIAL_PASSWORD:-}" ]] && err "ADMIN_INITIAL_PASSWORD no definida. Ejemplo: export ADMIN_INITIAL_PASSWORD=\"admin123\""
 ok "DB_URL  = $DB_URL"
 ok "DB_USER = $DB_USER"
 ok "DB_PASS = ${DB_PASS:-(vacío)}"
-ok "ADMIN_INITIAL_PASSWORD = (configurada)"
 
 hdr "Sistema"
-sudo apt update &>/dev/null && ok "Repos actualizados"
+# Detectar distro (Ubuntu, Kali, Debian, Linux Mint, etc.)
+if ! command -v apt-get &>/dev/null; then
+    err "Este script requiere apt-get (Ubuntu, Kali, Debian o derivados)."
+fi
+sudo apt-get update -qq && ok "Repos actualizados"
 
 hdr "Dependencias"
-pkg_ok() {
-    dpkg -l | grep -q "^ii  $1 " &>/dev/null \
-        && ok "$1 presente" \
-        || { info "Instalando $1..."; sudo apt install -y "$1" &>/dev/null && ok "$1 instalado"; }
-}
-pkg_ok "openjdk-21-jdk"
-pkg_ok "maven"
-pkg_ok "mysql-server"
 
+# Java 21 (openjdk)
+if java -version 2>&1 | grep -q "21"; then
+    ok "openjdk-21 presente"
+else
+    info "Instalando openjdk-21-jdk..."
+    sudo apt-get install -y openjdk-21-jdk &>/dev/null && ok "openjdk-21-jdk instalado"
+fi
+
+# Maven
+if command -v mvn &>/dev/null; then
+    ok "maven presente"
+else
+    info "Instalando maven..."
+    sudo apt-get install -y maven &>/dev/null && ok "maven instalado"
+fi
+
+# MariaDB (en Ubuntu/Kali el paquete es mariadb-server)
+if dpkg -l mariadb-server &>/dev/null 2>&1; then
+    ok "mariadb-server presente"
+else
+    info "Instalando mariadb-server..."
+    sudo apt-get install -y mariadb-server &>/dev/null && ok "mariadb-server instalado"
+fi
+
+# Asegurar JAVA_HOME
 [[ -z "${JAVA_HOME:-}" ]] && \
     export JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(which java)")")")
 
-hdr "MySQL"
+hdr "MariaDB"
+
+# En Ubuntu/Kali no se usa mariadb-install-db manualmente;
+# el paquete lo inicializa solo. Solo verificamos que el datadir exista.
 if [[ ! -d /var/lib/mysql/mysql ]]; then
-    info "Inicializando datos..."
-    sudo mysqld --initialize-insecure --user=mysql &>/dev/null || true
+    info "Inicializando datos de MariaDB..."
+    sudo mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql &>/dev/null \
+        || sudo mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql &>/dev/null
     ok "Datos inicializados"
 else
     ok "Datos presentes"
 fi
 
-sudo systemctl enable mysql --now &>/dev/null
+sudo systemctl enable mariadb --now &>/dev/null
 
-info "Esperando MySQL..."
+info "Esperando MariaDB..."
 for i in {1..20}; do
     sudo mysqladmin ping --silent 2>/dev/null && break
     sleep 1
-    [[ $i -eq 20 ]] && err "MySQL no responde. Revisa: systemctl status mysql"
+    [[ $i -eq 20 ]] && err "MariaDB no responde. Revisa: systemctl status mariadb"
 done
-ok "MySQL activo"
+ok "MariaDB activo"
 
-sudo mysql -u root &>/dev/null <<'SQL'
+# En Ubuntu/Kali la auth por defecto es unix_socket; reseteamos para compatibilidad
+sudo mariadb -u root &>/dev/null <<'SQL'
 ALTER USER 'root'@'localhost' IDENTIFIED BY '';
 FLUSH PRIVILEGES;
 SQL
@@ -67,12 +91,12 @@ ok "Auth root OK"
 
 hdr "Base de datos"
 
-DB_EXISTS=$(mysql -u "$DB_USER" -sse \
+DB_EXISTS=$(mariadb -u "$DB_USER" -sse \
     "SELECT COUNT(*) FROM information_schema.SCHEMATA
      WHERE SCHEMA_NAME='$DB_NAME';" 2>/dev/null || echo 0)
 
 if [[ "$DB_EXISTS" -eq 1 ]]; then
-    TABLES_OK=$(mysql -u "$DB_USER" -sse \
+    TABLES_OK=$(mariadb -u "$DB_USER" -sse \
         "SELECT COUNT(*) FROM information_schema.TABLES
          WHERE TABLE_SCHEMA='$DB_NAME'
          AND TABLE_NAME IN
@@ -85,7 +109,7 @@ fi
 if [[ "$DB_EXISTS" -eq 1 && "$TABLES_OK" -eq 5 ]]; then
     info "BD ya inicializada. Saltando bootstrap."
     info "Aplicando migraciones..."
-    mysql -u "$DB_USER" "$DB_NAME" &>/dev/null <<'SQL'
+    mariadb -u "$DB_USER" "$DB_NAME" &>/dev/null <<'SQL'
 ALTER TABLE usuarios
     ADD COLUMN IF NOT EXISTS ultimo_login      TIMESTAMP NULL         AFTER fecha_registro,
     ADD COLUMN IF NOT EXISTS intentos_fallidos INT NOT NULL DEFAULT 0 AFTER ultimo_login,
@@ -98,7 +122,7 @@ SQL
 else
     if [[ "$DB_EXISTS" -eq 0 ]]; then
         info "Creando base de datos..."
-        mysql -u "$DB_USER" &>/dev/null <<SQL
+        mariadb -u "$DB_USER" &>/dev/null <<SQL
 CREATE DATABASE IF NOT EXISTS $DB_NAME
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 SQL
@@ -108,7 +132,7 @@ SQL
     fi
 
     info "Creando tablas..."
-    mysql -u "$DB_USER" "$DB_NAME" &>/dev/null <<'SQL'
+    mariadb -u "$DB_USER" "$DB_NAME" &>/dev/null <<'SQL'
 CREATE TABLE IF NOT EXISTS usuarios (
     id                  INT PRIMARY KEY AUTO_INCREMENT,
     nombre              VARCHAR(100) NOT NULL,
@@ -185,5 +209,5 @@ info "Compilando..."
 mvn clean javafx:run
 
 echo -e "\n${G}${B}[OK] Listo${X}"
-info "mysql  →  sudo systemctl start mysql"
-info "app    →  cd $PROYECTO_DIR && mvn clean javafx:run"
+info "mariadb  →  sudo systemctl start mariadb"
+info "app      →  cd $PROYECTO_DIR && mvn clean javafx:run"
