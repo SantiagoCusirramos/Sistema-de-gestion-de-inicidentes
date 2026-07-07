@@ -1,3 +1,4 @@
+```
 src/
 │
 ├── model/
@@ -48,3 +49,5 @@ src/
 │   └── PermisoDenegadoException.java ❗
 │
 └── Main.java                     ☀️
+
+      
